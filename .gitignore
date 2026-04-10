@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.optivault/
+.claude/
+*.js.map
+coverage/
