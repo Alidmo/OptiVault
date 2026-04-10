@@ -16,6 +16,96 @@ function dedupe(arr: string[]): string[] {
   return [...new Set(arr)];
 }
 
+/** Escape a string for use in a RegExp. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Walk forward from `openPos` (an opening `{`) and return the index of the
+ * matching `}`, respecting nested braces and string literals.
+ * Returns -1 if no matching brace is found.
+ */
+function findClosingBrace(source: string, openPos: number): number {
+  let depth = 0;
+  let inStr: '"' | "'" | '`' | null = null;
+  for (let i = openPos; i < source.length; i++) {
+    const ch = source[i];
+    if (inStr) {
+      if (ch === '\\') { i++; continue; } // skip escape sequence
+      if (ch === inStr) inStr = null;
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      inStr = ch as '"' | "'" | '`';
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      if (--depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Extract the function body (or expression) starting at `offset` in `source`.
+ *
+ * Handles both block bodies (`{ ... }`) and arrow expression bodies (`=> expr`).
+ * Returns null if no body can be located.
+ */
+function extractBodyAt(source: string, offset: number): string | null {
+  const slice = source.slice(offset);
+  const braceIdx = slice.indexOf('{');
+  const arrowIdx = slice.indexOf('=>');
+
+  // Arrow with expression body: `=>` appears before any `{`
+  if (arrowIdx !== -1 && (braceIdx === -1 || arrowIdx < braceIdx)) {
+    let j = arrowIdx + 2;
+    while (j < slice.length && (slice[j] === ' ' || slice[j] === '\t')) j++;
+    if (j < slice.length && slice[j] !== '{') {
+      // Expression body — take until `;` or end-of-line
+      const semi = slice.indexOf(';', j);
+      const nl = slice.indexOf('\n', j);
+      let stop = slice.length;
+      if (semi !== -1) stop = Math.min(stop, semi + 1);
+      if (nl !== -1) stop = Math.min(stop, nl);
+      return slice.slice(0, stop).trim();
+    }
+    // Arrow with block body — fall through to brace matching
+  }
+
+  if (braceIdx === -1) return null;
+  const closeIdx = findClosingBrace(slice, braceIdx);
+  if (closeIdx === -1) return null;
+  return slice.slice(0, closeIdx + 1).trim();
+}
+
+/**
+ * Extract the full source of a named function/arrow/method from TypeScript source.
+ *
+ * Handles:
+ *  - `[export] [async] function name(...) { ... }`
+ *  - `[export] const/let/var name = [async] (...) => ...`
+ *  - Class methods with optional access modifiers
+ */
+function extractTSFunctionCode(source: string, functionName: string): string | null {
+  const esc = escapeRegex(functionName);
+  const patterns = [
+    // Standard/async function declaration
+    new RegExp(`^[ \\t]*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s+${esc}\\b`, 'm'),
+    // Arrow/const/let/var assignment
+    new RegExp(`^[ \\t]*(?:export\\s+)?(?:const|let|var)\\s+${esc}\\b`, 'm'),
+    // Class method (indented, optional access modifiers)
+    new RegExp(`^[ \\t]+(?:(?:public|private|protected|static|async|override)\\s+)*${esc}\\b`, 'm'),
+  ];
+
+  for (const pat of patterns) {
+    const m = pat.exec(source);
+    if (!m) continue;
+    const body = extractBodyAt(source, m.index);
+    if (body) return body;
+  }
+  return null;
+}
+
 /**
  * Normalise a raw import path into a wikilink-friendly dep name.
  *
@@ -114,10 +204,19 @@ function extractTypeScriptExports(source: string): string[] {
     exports.push(m[1]);
   }
 
-  // export const / let / var name
+  // export const/let/var name = [async] (params): ReturnType => ...  (arrow function)
+  const arrowNames = new Set<string>();
+  const arrowExport =
+    /^[ \t]*export\s+(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?::\s*[^=\n]*)?\s*=>/gm;
+  while ((m = arrowExport.exec(source)) !== null) {
+    arrowNames.add(m[1]);
+    exports.push(`${m[1]}(${m[2]})`);
+  }
+
+  // export const / let / var name  (plain value — skip names already captured as arrows)
   const constExport = /^[ \t]*export\s+(?:const|let|var)\s+(\w+)/gm;
   while ((m = constExport.exec(source)) !== null) {
-    exports.push(m[1]);
+    if (!arrowNames.has(m[1])) exports.push(m[1]);
   }
 
   // export type Name / export interface Name
@@ -137,4 +236,5 @@ export const typescriptPlugin: LanguagePlugin = {
   extensions: ['.ts', '.tsx', '.js', '.mjs', '.jsx'],
   extractDeps: extractTypeScriptDeps,
   extractExports: extractTypeScriptExports,
+  extractFunctionCode: extractTSFunctionCode,
 };

@@ -3,7 +3,7 @@ import { program } from 'commander';
 
 program
   .name('optivault')
-  .description('Context Compiler: converts codebases into compressed Obsidian shadow notes')
+  .description('Zero-dependency AST-driven semantic router for Claude Code. Extracts repo structure via MCP protocol.')
   .version('0.1.0');
 
 program
@@ -26,11 +26,12 @@ program
 
 program
   .command('mcp')
-  .description('Start the MCP server exposing read_shadow_context')
+  .description('Start the MCP server with 3 semantic routing tools')
   .option('-o, --vault <path>', 'vault directory', '.optivault')
+  .option('-s, --source <path>', 'source directory for read_function_code tool', undefined)
   .action(async (options) => {
     const { startMcpServer } = await import('../mcp/server.js');
-    await startMcpServer(options.vault);
+    await startMcpServer(options.vault, options.source);
   });
 
 program.parse();

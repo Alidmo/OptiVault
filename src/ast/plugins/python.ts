@@ -121,6 +121,45 @@ function extractPythonExports(source: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Function Code Extraction
+// ---------------------------------------------------------------------------
+
+/** Escape a string for use in a RegExp. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Extract the full source of a named function or method from Python source.
+ *
+ * Handles top-level `def name(...)` and `async def name(...)`.
+ * The function body ends when a non-blank line returns to the same or lower
+ * indentation level as the `def` keyword.
+ */
+function extractPyFunctionCode(source: string, functionName: string): string | null {
+  const esc = escapeRegex(functionName);
+  const pat = new RegExp(`^([ \\t]*)(?:async\\s+)?def\\s+${esc}\\s*\\(`, 'm');
+  const m = pat.exec(source);
+  if (!m) return null;
+
+  const baseIndentLen = m[1].length;
+  const lines = source.slice(m.index).split('\n');
+  const out: string[] = [lines[0]];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') { out.push(line); continue; }
+    const indentLen = (line.match(/^([ \t]*)/)?.[1] ?? '').length;
+    if (indentLen <= baseIndentLen) break; // back at or above def level — function ended
+    out.push(line);
+  }
+
+  // Trim trailing blank lines
+  while (out.length > 1 && out[out.length - 1].trim() === '') out.pop();
+  return out.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Plugin Implementation
 // ---------------------------------------------------------------------------
 
@@ -128,4 +167,5 @@ export const pythonPlugin: LanguagePlugin = {
   extensions: ['.py'],
   extractDeps: extractPythonDeps,
   extractExports: extractPythonExports,
+  extractFunctionCode: extractPyFunctionCode,
 };

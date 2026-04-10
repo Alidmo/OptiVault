@@ -13,4 +13,10 @@ export interface LanguagePlugin {
 
   /** Extract export signatures from source code */
   extractExports(source: string): string[];
+
+  /**
+   * Extract the full source code of a specific function/method by name.
+   * Returns null if the function is not found or extraction fails.
+   */
+  extractFunctionCode?(source: string, functionName: string): string | null;
 }

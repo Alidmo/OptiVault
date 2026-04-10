@@ -41,6 +41,14 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => {
 // ---------------------------------------------------------------------------
 vi.mock('fs/promises', () => ({ readFile: mockReadFile }));
 
+vi.mock('../ast/parser.js', () => ({
+  parseFile: vi.fn(),
+}));
+
+vi.mock('../ast/function-extractor.js', () => ({
+  extractFunctionCode: vi.fn(() => null),
+}));
+
 // Import under test after mocks are in place
 import { startMcpServer } from './server.js';
 
@@ -51,20 +59,10 @@ const VAULT_DIR = '/vault';
 const FILENAME = 'src/auth.ts';
 const NOTE_CONTENT = '# auth.ts\nCompressed shadow context here.';
 
-async function invokeHandler(filename: string) {
-  // Trigger server initialisation so the tool is registered
-  await startMcpServer(VAULT_DIR);
-  const handler = capturedTools['read_shadow_context'];
-  if (!handler) throw new Error('read_shadow_context tool was not registered');
-  return handler({ filename }) as Promise<{
-    content: Array<{ type: string; text: string }>;
-  }>;
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe('MCP server – read_shadow_context tool', () => {
+describe('MCP server – semantic routing tools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Reset captured tools between tests
@@ -73,41 +71,51 @@ describe('MCP server – read_shadow_context tool', () => {
     }
   });
 
-  it('returns correct text content for an existing shadow context file', async () => {
-    mockReadFile.mockResolvedValueOnce(NOTE_CONTENT);
+  it('registers read_repo_map tool', async () => {
+    await startMcpServer(VAULT_DIR);
+    expect(capturedTools['read_repo_map']).toBeDefined();
+    expect(typeof capturedTools['read_repo_map']).toBe('function');
+  });
 
-    const result = await invokeHandler(FILENAME);
+  it('registers read_file_skeleton tool', async () => {
+    await startMcpServer(VAULT_DIR);
+    expect(capturedTools['read_file_skeleton']).toBeDefined();
+    expect(typeof capturedTools['read_file_skeleton']).toBe('function');
+  });
+
+  it('registers read_function_code tool', async () => {
+    await startMcpServer(VAULT_DIR, '/src');
+    expect(capturedTools['read_function_code']).toBeDefined();
+    expect(typeof capturedTools['read_function_code']).toBe('function');
+  });
+
+  it('read_file_skeleton returns file skeleton when it exists', async () => {
+    mockReadFile.mockResolvedValueOnce(NOTE_CONTENT);
+    await startMcpServer(VAULT_DIR);
+
+    const handler = capturedTools['read_file_skeleton'];
+    const result = (await handler({ filename: FILENAME })) as {
+      content: Array<{ type: string; text: string }>;
+    };
 
     expect(result.content).toHaveLength(1);
-    expect(result.content[0].type).toBe('text');
     expect(result.content[0].text).toBe(NOTE_CONTENT);
     expect(mockReadFile).toHaveBeenCalledWith(
       `${VAULT_DIR}/${FILENAME}.md`,
-      'utf-8',
+      'utf-8'
     );
   });
 
-  it('returns "No shadow context found" message when the file is missing (ENOENT)', async () => {
-    const enoent = Object.assign(new Error('ENOENT: no such file'), {
-      code: 'ENOENT',
-    });
+  it('read_file_skeleton returns error message when file missing', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     mockReadFile.mockRejectedValueOnce(enoent);
-
-    const result = await invokeHandler(FILENAME);
-
-    expect(result.content).toHaveLength(1);
-    expect(result.content[0].type).toBe('text');
-    expect(result.content[0].text).toBe(
-      `No shadow context found for: ${FILENAME}. Run 'optivault init' first.`,
-    );
-  });
-
-  it('registers the read_shadow_context tool on the McpServer instance', async () => {
-    mockReadFile.mockResolvedValue(NOTE_CONTENT);
-
     await startMcpServer(VAULT_DIR);
 
-    expect(capturedTools['read_shadow_context']).toBeDefined();
-    expect(typeof capturedTools['read_shadow_context']).toBe('function');
+    const handler = capturedTools['read_file_skeleton'];
+    const result = (await handler({ filename: FILENAME })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(result.content[0].text).toContain('No skeleton found');
   });
 });

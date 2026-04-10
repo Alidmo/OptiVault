@@ -5,8 +5,6 @@ import { readdir, mkdir, writeFile } from 'fs/promises';
 import { join, relative, dirname } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
-import { summarizeFunctions } from '../compression/ollama.js';
-import type { FunctionSummary } from '../compression/ollama.js';
 import { formatVaultNote } from '../compression/formatter.js';
 
 // ---------------------------------------------------------------------------
@@ -48,7 +46,7 @@ export async function walkDir(dir: string): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// processFile — parse + summarize + format for one file
+// processFile — parse and format for one file (no summarization needed)
 // ---------------------------------------------------------------------------
 
 export async function processFile(filePath: string): Promise<{
@@ -56,25 +54,7 @@ export async function processFile(filePath: string): Promise<{
   content: string;
 }> {
   const parsed = await parseFile(filePath);
-
-  let summaries: FunctionSummary[] = [];
-  try {
-    // Build stub function entries from exports for summarization.
-    // Since the AST parser gives us signatures only (not bodies),
-    // we pass empty bodies — Ollama will do its best.
-    const functionEntries = parsed.exports.map((sig) => ({
-      signature: sig,
-      body: '',
-    }));
-    if (functionEntries.length > 0) {
-      summaries = await summarizeFunctions(functionEntries);
-    }
-  } catch {
-    // Ollama not running or unreachable — degrade gracefully with no caveman lines
-    summaries = [];
-  }
-
-  const content = formatVaultNote(parsed, summaries);
+  const content = formatVaultNote(parsed);
   return { parsed, content };
 }
 
@@ -137,7 +117,15 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
     const rel = toRelativeForwardSlash(filePath, dir);
     console.log(`[optivault] Processing ${rel}...`);
 
-    const { parsed, content } = await processFile(filePath);
+    let parsed: ParseResult;
+    let content: string;
+    try {
+      ({ parsed, content } = await processFile(filePath));
+    } catch (err) {
+      console.warn(`[optivault] Warning: skipping ${rel} — ${(err as Error).message}`);
+      continue;
+    }
+
     allParsed.push(parsed);
 
     // Write to .optivault/<relative-path>.md

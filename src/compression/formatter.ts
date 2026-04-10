@@ -1,13 +1,8 @@
-// Formatter — Builds TOON + Caveman .md string from ParseResult + summaries (Task 3)
+// Formatter — Builds TOON + Signatures .md string from ParseResult
 
 import type { ParseResult } from '../ast/parser.js';
-import type { FunctionSummary } from './ollama.js';
 
-export function formatVaultNote(
-  parsed: ParseResult,
-  summaries: FunctionSummary[],
-  notes?: string
-): string {
+export function formatVaultNote(parsed: ParseResult, notes?: string): string {
   const lines: string[] = ['---'];
 
   lines.push(`tgt: ${parsed.filePath}`);
@@ -22,8 +17,12 @@ export function formatVaultNote(
 
   lines.push('---');
 
-  for (const summary of summaries) {
-    lines.push(`${summary.signature}: ${summary.caveman}`);
+  // New format: ## Signatures section with full function signatures
+  if (parsed.exports.length > 0) {
+    lines.push('## Signatures');
+    for (const signature of parsed.exports) {
+      lines.push(`- \`${signature}\``);
+    }
   }
 
   if (notes !== undefined && notes.length > 0) {

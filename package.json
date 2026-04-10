@@ -1,7 +1,7 @@
 {
   "name": "optivault",
   "version": "0.1.0",
-  "description": "Context Compiler and MCP server — converts codebases into ultra-compressed Obsidian shadow notes",
+  "description": "Zero-dependency AST-driven semantic router for Claude Code. Extracts repo structure, signatures, and function bodies via MCP protocol.",
   "type": "module",
   "bin": {
     "optivault": "./dist/cli/index.js"
