@@ -29,7 +29,10 @@ Claude Code gets a **4-tool semantic router** to traverse your codebase hierarch
 - **Self-enforcing protocol** — auto-generated `CLAUDE.md` tells Claude *exactly* how to use OptiVault.
 - **Idempotent init** — mtime-checked; re-running init on a 5,000-file repo takes milliseconds.
 - **Plugin architecture** — add Go, Rust, or Java by implementing a single interface.
-- **79 passing tests** — full coverage across extraction, fallbacks, MCP tools, and caching.
+- **Obsidian-compatible vault** — default dir `_optivault` is visible in Obsidian natively (no leading dot).
+- **Auto-migration** — detects and renames legacy `.optivault` directories automatically; zero data loss.
+- **Configurable vault name** — drop an `optivault.json` in your project root to rename the vault dir.
+- **99 passing tests** — full coverage across extraction, fallbacks, MCP tools, caching, and migration.
 
 ---
 
@@ -61,15 +64,15 @@ optivault --help
 ## Quickstart
 
 ```bash
-# 1. Index your project
+# 1. Index your project (creates _optivault/, CLAUDE.md, and .gitignore entry)
 optivault init ~/my-project
 
 # 2. Register with Claude Code
 claude mcp add optivault optivault -- mcp \
-  --vault ~/my-project/.optivault \
+  --vault ~/my-project/_optivault \
   --source ~/my-project
 
-# 3. Open Claude Code in that project — it will read CLAUDE.md and follow the protocol
+# 3. Open Claude Code in that project — it will read CLAUDE.md and follow the protocol automatically
 ```
 
 ---
@@ -83,13 +86,16 @@ optivault init ~/my-project
 ```
 
 What happens:
+- Checks for a legacy `.optivault` directory and **renames it automatically** (zero data loss)
+- Reads `optivault.json` for a custom vault dir name, defaults to `_optivault`
 - Recursively walks the project for `.ts`, `.tsx`, `.js`, `.mjs`, `.py` files
-- Skips `node_modules`, `.git`, `dist`, `.optivault`
-- Checks mtime — only re-parses files newer than their vault note (idempotent)
+- Skips `node_modules`, `.git`, `dist`, and the vault dir itself
+- Checks mtime — only re-parses files newer than their vault note (fully idempotent)
 - Extracts function signatures, arrow functions, class methods, imports
-- Writes `.md` shadow notes to `~/my-project/.optivault/`
+- Writes `.md` shadow notes to `~/my-project/_optivault/`
 - Generates `_RepoMap.md` — master index of the entire repo
 - Creates (or patches) `CLAUDE.md` with the OptiVault protocol directive
+- Adds the vault dir to `.gitignore` automatically
 
 **Example vault note** (`src/auth.ts.md`):
 
@@ -126,7 +132,7 @@ Stays running. Re-indexes files the moment they're saved. Use this during active
 ### 3. MCP Server (`optivault mcp`)
 
 ```bash
-optivault mcp --vault ~/my-project/.optivault --source ~/my-project
+optivault mcp --vault ~/my-project/_optivault --source ~/my-project
 ```
 
 Starts the MCP server. Claude Code connects automatically once registered.
@@ -222,6 +228,7 @@ Generated content:
 <!-- optivault-protocol -->
 # OptiVault Protocol Active
 This repository uses OptiVault for AST-compressed context.
+Shadow vault: `_optivault/`
 
 **Rules for AI Assistants:**
 1. NEVER use `cat`, `grep`, or standard file reads to understand the codebase initially.
@@ -231,6 +238,8 @@ This repository uses OptiVault for AST-compressed context.
 5. **CRITICAL:** Whenever you modify a file or write new code, you MUST immediately call the
    `sync_file_context` MCP tool on that file to keep the shadow vault up to date.
 ```
+
+The `Shadow vault:` line reflects whatever `vaultDir` is configured (default: `_optivault`).
 
 Claude Code reads `CLAUDE.md` automatically at the start of every session. No setup required after the first `init`.
 
@@ -242,7 +251,7 @@ Claude Code reads `CLAUDE.md` automatically at the start of every session. No se
 
 ```bash
 claude mcp add optivault optivault -- mcp \
-  --vault /path/to/project/.optivault \
+  --vault /path/to/project/_optivault \
   --source /path/to/project
 ```
 
@@ -258,7 +267,7 @@ Add to `~/.claude.json` (or your project-local Claude settings):
       "command": "optivault",
       "args": [
         "mcp",
-        "--vault", "/path/to/project/.optivault",
+        "--vault", "/path/to/project/_optivault",
         "--source", "/path/to/project"
       ]
     }
@@ -272,10 +281,10 @@ Register a separate MCP server per project with unique names:
 
 ```bash
 claude mcp add optivault-api optivault -- mcp \
-  --vault ~/projects/api/.optivault --source ~/projects/api
+  --vault ~/projects/api/_optivault --source ~/projects/api
 
 claude mcp add optivault-frontend optivault -- mcp \
-  --vault ~/projects/frontend/.optivault --source ~/projects/frontend
+  --vault ~/projects/frontend/_optivault --source ~/projects/frontend
 ```
 
 ---
@@ -288,12 +297,12 @@ Index a project. Safe to re-run — unchanged files are skipped.
 
 ```bash
 optivault init ~/my-project
-optivault init ~/my-project --output ~/my-project/.optivault
+optivault init ~/my-project --output ~/my-project/_optivault
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `-o, --output <path>` | `.optivault` | Output directory for vault notes |
+| `-o, --output <path>` | from `optivault.json`, else `_optivault` | Output directory for vault notes |
 
 ### `optivault watch [dir] [options]`
 
@@ -305,19 +314,19 @@ optivault watch ~/my-project
 
 | Option | Default | Description |
 |---|---|---|
-| `-o, --output <path>` | `.optivault` | Output directory for vault notes |
+| `-o, --output <path>` | from `optivault.json`, else `_optivault` | Output directory for vault notes |
 
 ### `optivault mcp [options]`
 
 Start the MCP server (4 tools).
 
 ```bash
-optivault mcp --vault ~/my-project/.optivault --source ~/my-project
+optivault mcp --vault ~/my-project/_optivault --source ~/my-project
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `-o, --vault <path>` | `.optivault` | Vault directory to serve |
+| `-o, --vault <path>` | from `optivault.json`, else `_optivault` | Vault directory to serve |
 | `-s, --source <path>` | — | Source root (required for `read_function_code` and `sync_file_context`) |
 
 ---
@@ -326,6 +335,7 @@ optivault mcp --vault ~/my-project/.optivault --source ~/my-project
 
 ```
 src/
+├── config.ts               # getConfig — reads optivault.json, returns OptiVaultConfig
 ├── ast/
 │   ├── plugins/
 │   │   ├── typescript.ts   # .ts .tsx .js .mjs .jsx — imports, exports, arrow fns, methods
@@ -339,12 +349,13 @@ src/
 ├── compression/
 │   └── formatter.ts        # formatVaultNote — ParseResult → .md frontmatter
 ├── vault/
-│   ├── init.ts             # walkDir, runInit, generateClaudeMd, VaultRegistry
+│   ├── init.ts             # walkDir, runInit, migrateLegacyVault, generateClaudeMd,
+│   │                       #   ensureGitignored, VaultRegistry
 │   └── watch.ts            # chokidar watcher, incremental re-index
 ├── mcp/
 │   └── server.ts           # McpServer with 4 tools
 └── cli/
-    └── index.ts            # Commander CLI — init / watch / mcp
+    └── index.ts            # Commander CLI — init / watch / mcp (all consume getConfig)
 ```
 
 ### Plugin Interface
@@ -405,20 +416,42 @@ Done. Zero changes to core code.
 
 ---
 
+## Configuration
+
+Create an `optivault.json` file in your project root to override the vault directory name:
+
+```json
+{
+  "vaultDir": "_my_custom_vault"
+}
+```
+
+Resolution order (highest priority first):
+
+1. `--output` / `--vault` CLI flag
+2. `vaultDir` in `optivault.json`
+3. Built-in default: `_optivault`
+
+The config file is read by `init`, `watch`, and `mcp` commands automatically — no flags needed once it exists.
+
+---
+
 ## Use with Obsidian
 
-The `.optivault/` directory is a valid Obsidian vault:
+The `_optivault/` directory is a fully functional Obsidian vault, visible natively without any plugins:
 
-1. Open Obsidian → **Open folder as vault** → select `.optivault/`
+1. Open Obsidian → **Open folder as vault** → select `_optivault/`
 2. Every source file is a note, wikilinked via its imports
 3. Open **Graph View** to visualize your entire codebase as a dependency graph
+
+> **Note:** The previous `.optivault` default used a leading dot, which Obsidian silently ignores. The new default `_optivault` is always visible.
 
 ---
 
 ## Testing
 
 ```bash
-npm test            # Run full suite (79 tests)
+npm test            # Run full suite (99 tests)
 npm run test:watch  # Continuous mode during development
 npm run build       # TypeScript compilation check
 npm run lint        # Type check without emit
@@ -430,9 +463,12 @@ Test coverage includes:
 - Arrow function signature extraction (`export const fn = (x: T) => {}`)
 - Python dep/export extraction
 - `extractFunctionCode` for TS standard functions, arrow functions, class methods, Python defs
+- `getConfig` — missing file, malformed JSON, empty vaultDir, whitespace trimming
 - `runInit` — graceful fallback on parse errors, empty projects, mtime caching
-- `generateClaudeMd` — create, append, idempotent no-op
-- All 4 MCP tools — registration, happy path, ENOENT handling, `sync_file_context` patch logic
+- `generateClaudeMd` — create, append, idempotent no-op, custom vault dir name
+- `ensureGitignored` — create, append, idempotent no-op
+- `migrateLegacyVault` — rename, no legacy dir, identical paths, both dirs exist guard
+- All 4 MCP tools — registration, happy path, ENOENT handling, `sync_file_context` patch/insert/replace logic
 
 ---
 
@@ -458,6 +494,15 @@ No. It reads the existing `_RepoMap.md`, replaces or inserts just the one change
 
 **What languages are supported?**
 TypeScript, TSX, JavaScript, MJS, JSX, and Python out of the box. Any language can be added via the plugin interface.
+
+**I have an old `.optivault` directory. Do I need to rename it manually?**
+No. The first time you run `optivault init` (or `watch` or `mcp`) after upgrading, OptiVault detects the legacy `.optivault` directory and renames it to `_optivault` automatically. No data is lost.
+
+**Why `_optivault` instead of `.optivault`?**
+Obsidian natively ignores any directory whose name starts with a dot. The `_optivault` default is fully visible in Obsidian's file explorer and Graph View without any plugins or workarounds.
+
+**Does OptiVault touch `.gitignore`?**
+Yes — `optivault init` appends the vault dir name to `.gitignore` if it isn't already there. It creates `.gitignore` if the file doesn't exist. It is always a no-op if the entry is already present.
 
 ---
 

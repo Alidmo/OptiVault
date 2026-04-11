@@ -1,8 +1,8 @@
-// Vault Watcher — Task 4 (Filesystem Agent)
+// Vault Watcher
 // Responsibilities: chokidar watch, incremental re-parse on file save
 
 import { unlink, mkdir, writeFile } from 'fs/promises';
-import { join, relative, dirname } from 'path';
+import { join, relative, dirname, basename } from 'path';
 import chokidar from 'chokidar';
 import {
   runInit,
@@ -17,13 +17,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.py']);
-
-const WATCH_IGNORED = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/dist/**',
-  '**/.optivault/**',
-];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,12 +43,22 @@ function notePathFor(filePath: string, dir: string, outputDir: string): string {
 // ---------------------------------------------------------------------------
 
 export async function runWatch(dir: string, outputDir: string): Promise<void> {
+  const vaultDirName = basename(outputDir);
+
+  // Patterns for directories chokidar should never watch into
+  const watchIgnored = [
+    '**/node_modules/**',
+    '**/.git/**',
+    '**/dist/**',
+    `**/${vaultDirName}/**`,
+  ];
+
   // 1. Initial full scan
   await runInit(dir, outputDir);
 
-  // 2. Populate registry from the initial scan so we can do incremental updates
+  // 2. Populate registry from the initial scan
   const registry = new VaultRegistry();
-  const allFiles = await walkDir(dir);
+  const allFiles = await walkDir(dir, new Set([vaultDirName]));
   for (const filePath of allFiles) {
     try {
       const { parsed } = await processFile(filePath);
@@ -67,9 +70,9 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
 
   // 3. Set up chokidar watcher
   const watcher = chokidar.watch(dir, {
-    ignored: WATCH_IGNORED,
+    ignored: watchIgnored,
     persistent: true,
-    ignoreInitial: true, // we already did the initial scan
+    ignoreInitial: true,
     awaitWriteFinish: {
       stabilityThreshold: 200,
       pollInterval: 50,
@@ -87,7 +90,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
       const { parsed, content } = await processFile(filePath);
       registry.set(filePath, parsed);
 
-      // Overwrite the note
       const notePath = notePathFor(filePath, dir, outputDir);
       const noteDir = dirname(notePath);
       await mkdir(noteDir, { recursive: true });
@@ -97,7 +99,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
       return;
     }
 
-    // Regenerate _RepoMap.md
     try {
       await writeRepoMap(outputDir, registry.getAll(), dir);
     } catch (err) {
@@ -114,7 +115,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
 
     registry.delete(filePath);
 
-    // Delete the corresponding .md note
     const notePath = notePathFor(filePath, dir, outputDir);
     try {
       await unlink(notePath);
@@ -122,7 +122,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
       // File may not exist — ignore
     }
 
-    // Regenerate _RepoMap.md
     try {
       await writeRepoMap(outputDir, registry.getAll(), dir);
     } catch (err) {
@@ -140,7 +139,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
 
   console.log(`[optivault:watch] Watching ${dir} for changes...`);
 
-  // Keep the process alive
   await new Promise<void>((resolve) => {
     watcher.on('close', resolve);
   });
