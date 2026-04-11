@@ -1,20 +1,35 @@
 # OptiVault
 
-**Zero-Dependency AST-Driven Semantic Router for Claude Code**
+**Zero-Dependency AST-Driven Context Compiler and MCP Server for Claude Code**
 
-OptiVault solves the "token bloat" problem with the most direct approach: no LLMs, no summarization, no external dependencies. 
+OptiVault solves the "token bloat" problem with the most direct approach: no LLMs, no summarization, no external API calls. It extracts your repo's structure—function signatures, arrow functions, class methods, dependencies—using pure AST parsing, writes a compressed shadow vault, and exposes it via the MCP protocol.
 
-Simply extract your repo's structure (functions, signatures, dependencies) using pure AST parsing, generate an Obsidian knowledge graph, and expose it via MCP protocol. Claude Code gets a 3-tool semantic router to traverse your codebase hierarchically—asking for bird's-eye views, file skeletons, or specific function bodies—consuming **50 tokens instead of 1,000 per file**.
+Claude Code gets a **4-tool semantic router** to traverse your codebase hierarchically, consuming **~50 tokens per file instead of ~1,000**. As soon as Claude is done writing code, a single `sync_file_context` call keeps the vault perfectly up to date.
 
 ---
 
-## Why OptiVault is Elite
+## Why OptiVault
 
-- **Zero External Dependencies:** No Ollama, no local LLMs, no API calls. Pure TypeScript AST extraction.
-- **Blazing Fast:** Scans 1,000 files in ~2-3 seconds. No ML overhead.
-- **Semantic Router:** 3 MCP tools give Claude granular control over what it reads.
-- **Production Ready:** Strict typing, 53 passing tests, no rough edges.
-- **Language Agnostic:** Plugin architecture scales to any language (Go, Rust, Java coming soon).
+| Problem | OptiVault's Solution |
+|---|---|
+| Claude reads entire files to understand structure | `read_file_skeleton` returns deps + signatures in ~50 tokens |
+| Context window fills with irrelevant code | `read_function_code` fetches only the function Claude needs |
+| Shadow context goes stale when Claude writes code | `sync_file_context` re-indexes a single file in ~20ms |
+| Claude doesn't know OptiVault exists | `optivault init` generates `CLAUDE.md` enforcing the protocol |
+| Re-running `init` on a large project is slow | mtime-based caching skips unchanged files entirely |
+
+---
+
+## Features
+
+- **Zero external dependencies** — no Ollama, no LLMs, no API calls. Pure TypeScript.
+- **Blazing fast** — scans 1,000 files in ~2–3 seconds; incremental sync in ~20ms.
+- **Full arrow function support** — `export const fn = (x: string) => {}` extracts as `fn(x: string)`, not just `fn`.
+- **4-tool MCP semantic router** — bird's-eye map → file skeleton → function body → live re-sync.
+- **Self-enforcing protocol** — auto-generated `CLAUDE.md` tells Claude *exactly* how to use OptiVault.
+- **Idempotent init** — mtime-checked; re-running init on a 5,000-file repo takes milliseconds.
+- **Plugin architecture** — add Go, Rust, or Java by implementing a single interface.
+- **79 passing tests** — full coverage across extraction, fallbacks, MCP tools, and caching.
 
 ---
 
@@ -25,130 +40,242 @@ Simply extract your repo's structure (functions, signatures, dependencies) using
 - **Node.js** ≥ 20 ([download](https://nodejs.org/))
 - **npm** (comes with Node.js)
 
-### Setup
+### From Source
 
 ```bash
-cd /path/to/openvault
+git clone https://github.com/your-username/optivault
+cd optivault
 npm install
 npm run build
 npm link
 ```
 
-The `npm link` step makes `optivault` available globally. You can now run it from anywhere:
+`npm link` makes the `optivault` binary available globally:
 
 ```bash
-optivault init /path/to/your/project
-optivault mcp --vault /path/to/project/.optivault --source /path/to/project
+optivault --help
 ```
 
 ---
 
-## Usage
+## Quickstart
 
-### Initialize A Project
+```bash
+# 1. Index your project
+optivault init ~/my-project
+
+# 2. Register with Claude Code
+claude mcp add optivault optivault -- mcp \
+  --vault ~/my-project/.optivault \
+  --source ~/my-project
+
+# 3. Open Claude Code in that project — it will read CLAUDE.md and follow the protocol
+```
+
+---
+
+## How It Works
+
+### 1. Index (`optivault init`)
 
 ```bash
 optivault init ~/my-project
 ```
 
-This:
-- Recursively walks `~/my-project` and finds `.ts`, `.tsx`, `.js`, `.mjs`, `.py` files
-- Extracts function signatures and dependencies from each
-- Writes `.md` notes to `~/my-project/.optivault/`
-- Generates `_RepoMap.md` — a master index
+What happens:
+- Recursively walks the project for `.ts`, `.tsx`, `.js`, `.mjs`, `.py` files
+- Skips `node_modules`, `.git`, `dist`, `.optivault`
+- Checks mtime — only re-parses files newer than their vault note (idempotent)
+- Extracts function signatures, arrow functions, class methods, imports
+- Writes `.md` shadow notes to `~/my-project/.optivault/`
+- Generates `_RepoMap.md` — master index of the entire repo
+- Creates (or patches) `CLAUDE.md` with the OptiVault protocol directive
 
-**Example output:**
+**Example vault note** (`src/auth.ts.md`):
 
 ```markdown
 ---
 tgt: src/auth.ts
 dep: [[database]], [[crypto]]
-exp: [verifyToken(token: string): Promise<boolean>, hashPwd(plain: string): string]
+exp: [verifyToken(token: string), hashPwd(plain: string), TokenService]
 ---
 ## Signatures
-- `verifyToken(token: string): Promise<boolean>`
-- `hashPwd(plain: string): string`
+- `verifyToken(token: string)`
+- `hashPwd(plain: string)`
+- `TokenService`
 ```
 
-### Watch for Changes
+**Example RepoMap** (`_RepoMap.md`):
+
+```markdown
+# RepoMap
+
+- [[src/auth]] — exports: verifyToken(token: string), hashPwd(plain: string) — deps: database, crypto
+- [[src/db/pool]] — exports: getConnection(), closePool() — deps: pg, config
+- [[src/middleware/rate-limit]] — exports: rateLimiter(opts: RateLimitOpts) — deps: express, redis
+```
+
+### 2. Watch (`optivault watch`)
 
 ```bash
 optivault watch ~/my-project
 ```
 
-Stays running and re-indexes files on save. Perfect for development.
+Stays running. Re-indexes files the moment they're saved. Use this during active development instead of the MCP `sync_file_context` tool.
 
-### Use with Obsidian
+### 3. MCP Server (`optivault mcp`)
 
-1. Open Obsidian
-2. Open the `.optivault/` folder as your vault
-3. Explore the knowledge graph: files are wikilinked via dependencies
-4. Use **Graph View** to visualize your entire codebase structure
-
-### Use with Claude Code via MCP
-
-OptiVault exposes **3 semantic tools**:
-
-#### Tool 1: `read_repo_map`
-Get the bird's-eye view of your entire codebase.
-
-```
-You: "Show me the architecture of this repo"
---> read_repo_map
-<-- Returns _RepoMap.md with all files, exports, deps
+```bash
+optivault mcp --vault ~/my-project/.optivault --source ~/my-project
 ```
 
-#### Tool 2: `read_file_skeleton`
-Get the compressed structure of a specific file (deps + signatures).
+Starts the MCP server. Claude Code connects automatically once registered.
+
+---
+
+## The 4 MCP Tools
+
+### `read_repo_map`
+
+Returns the full `_RepoMap.md` — a bird's-eye view of every file, its exports, and its dependencies.
 
 ```
-You: "What does src/auth.ts export?"
---> read_file_skeleton(filename: "src/auth.ts")
-<-- Returns {
-      tgt: src/auth.ts,
-      dep: [[database]], [[crypto]],
-      exp: [verifyToken(...), hashPwd(...)],
-      ## Signatures section
-    }
+Claude: "What's the architecture of this repo?"
+→ read_repo_map()
+← # RepoMap
+  - [[src/auth]] — exports: verifyToken(...), hashPwd(...) — deps: database, crypto
+  - [[src/db/pool]] — exports: getConnection() — deps: pg
+  ...
 ```
 
-#### Tool 3: `read_function_code` (NEW)
-After `read_file_skeleton`, fetch the actual implementation of a specific function.
+**When to use:** Always call this first. It costs ~200 tokens and gives complete structural context.
+
+---
+
+### `read_file_skeleton`
+
+Returns the compressed shadow note for a specific file: deps + all exported signatures.
 
 ```
-You: "I need to fix the verifyToken function"
---> read_function_code(filename: "src/auth.ts", functionName: "verifyToken")
-<-- Returns just that function's source code (~20 lines)
-  instead of the entire 500-line file
+Claude: "What does src/auth.ts export?"
+→ read_file_skeleton(filename: "src/auth.ts")
+← ---
+  tgt: src/auth.ts
+  dep: [[database]], [[crypto]]
+  exp: [verifyToken(token: string), hashPwd(plain: string)]
+  ---
+  ## Signatures
+  - `verifyToken(token: string)`
+  - `hashPwd(plain: string)`
 ```
 
-### Register in Claude Code
+**When to use:** After `read_repo_map` identifies the relevant file, before reading the full source.
 
-Add to `~/.claude/settings.json`:
+---
+
+### `read_function_code`
+
+Extracts just the implementation of a named function — standard functions, arrow functions, class methods, async functions, generic functions.
+
+```
+Claude: "I need to understand how verifyToken works"
+→ read_function_code(filename: "src/auth.ts", functionName: "verifyToken")
+← export function verifyToken(token: string): boolean {
+    const decoded = jwt.verify(token, process.env.SECRET);
+    return decoded !== null;
+  }
+```
+
+**When to use:** When you need the actual logic, not just the signature. Fetches ~20 lines instead of the entire 500-line file.
+
+Requires `--source` to be set on the MCP server.
+
+---
+
+### `sync_file_context`
+
+**The key to a stale-free vault.** Call this immediately after writing or modifying any source file. It re-parses the single file, overwrites its vault note, and patches its entry in `_RepoMap.md` — all in ~20ms.
+
+```
+Claude: [writes new function calculateTax to src/billing.ts]
+→ sync_file_context(filename: "src/billing.ts")
+← "Successfully synced shadow context for src/billing.ts."
+```
+
+`CLAUDE.md` makes this mandatory — Claude will call it autonomously after every file write.
+
+Requires `--source` to be set on the MCP server.
+
+---
+
+## CLAUDE.md — The Self-Enforcing Protocol
+
+Every time `optivault init` runs, it checks for `CLAUDE.md` in the project root:
+
+- **Not present** → creates it
+- **Present, no OptiVault section** → appends the protocol block (original content preserved)
+- **Already patched** → silent no-op
+
+Generated content:
+
+```markdown
+<!-- optivault-protocol -->
+# OptiVault Protocol Active
+This repository uses OptiVault for AST-compressed context.
+
+**Rules for AI Assistants:**
+1. NEVER use `cat`, `grep`, or standard file reads to understand the codebase initially.
+2. ALWAYS start by calling the `read_repo_map` MCP tool.
+3. Use `read_file_skeleton` to view a file's dependencies and exported signatures.
+4. Use `read_function_code` if you need to analyze or modify a specific function body.
+5. **CRITICAL:** Whenever you modify a file or write new code, you MUST immediately call the
+   `sync_file_context` MCP tool on that file to keep the shadow vault up to date.
+```
+
+Claude Code reads `CLAUDE.md` automatically at the start of every session. No setup required after the first `init`.
+
+---
+
+## Register with Claude Code
+
+### Via CLI (recommended)
+
+```bash
+claude mcp add optivault optivault -- mcp \
+  --vault /path/to/project/.optivault \
+  --source /path/to/project
+```
+
+### Via settings file
+
+Add to `~/.claude.json` (or your project-local Claude settings):
 
 ```json
 {
   "mcpServers": {
     "optivault": {
+      "type": "stdio",
       "command": "optivault",
       "args": [
         "mcp",
-        "--vault",
-        "/path/to/project/.optivault",
-        "--source",
-        "/path/to/project"
+        "--vault", "/path/to/project/.optivault",
+        "--source", "/path/to/project"
       ]
     }
   }
 }
 ```
 
-Then start asking Claude Code about your codebase:
+### Multiple Projects
 
-```
-You: "What does the database module do?"
-Claude: *Calls read_repo_map, scans the map, calls read_file_skeleton for database.ts*
-"The database module exports..."
+Register a separate MCP server per project with unique names:
+
+```bash
+claude mcp add optivault-api optivault -- mcp \
+  --vault ~/projects/api/.optivault --source ~/projects/api
+
+claude mcp add optivault-frontend optivault -- mcp \
+  --vault ~/projects/frontend/.optivault --source ~/projects/frontend
 ```
 
 ---
@@ -157,83 +284,81 @@ Claude: *Calls read_repo_map, scans the map, calls read_file_skeleton for databa
 
 ### `optivault init [dir] [options]`
 
-Generate shadow context for a codebase.
+Index a project. Safe to re-run — unchanged files are skipped.
 
 ```bash
+optivault init ~/my-project
 optivault init ~/my-project --output ~/my-project/.optivault
 ```
 
-**Options:**
-- `-o, --output <path>` — where to write `.md` files (default: `.optivault`)
+| Option | Default | Description |
+|---|---|---|
+| `-o, --output <path>` | `.optivault` | Output directory for vault notes |
 
 ### `optivault watch [dir] [options]`
 
-Watch for file changes and update notes incrementally.
+Watch for file changes and update incrementally. Press `Ctrl+C` to stop.
 
 ```bash
 optivault watch ~/my-project
 ```
 
-Press `Ctrl+C` to stop.
+| Option | Default | Description |
+|---|---|---|
+| `-o, --output <path>` | `.optivault` | Output directory for vault notes |
 
 ### `optivault mcp [options]`
 
-Start the MCP server with 3 semantic tools.
+Start the MCP server (4 tools).
 
 ```bash
 optivault mcp --vault ~/my-project/.optivault --source ~/my-project
 ```
 
-**Options:**
-- `-o, --vault <path>` — vault directory (default: `.optivault`)
-- `-s, --source <path>` — source directory (enables `read_function_code`)
+| Option | Default | Description |
+|---|---|---|
+| `-o, --vault <path>` | `.optivault` | Vault directory to serve |
+| `-s, --source <path>` | — | Source root (required for `read_function_code` and `sync_file_context`) |
 
 ---
 
 ## Architecture
 
-### AST Parsing (Plugin-Based)
-
-- **TypeScript/JavaScript:** Extracts imports, exports, function signatures via regex
-- **Python:** Extracts top-level defs, imports, class definitions
-- **Extensible:** Add Go, Rust, or Java by implementing the `LanguagePlugin` interface
-
-### Formatting (TOON + Signatures)
-
-Every `.md` file follows this spec:
-
-```markdown
----
-tgt: <file path>
-dep: [[dep1]], [[dep2]]             ← Obsidian wikilinks to dependencies
-exp: [func1(args): ReturnType, ...]  ← Exported function signatures
----
-## Signatures
-- `func1(arg1: type): ReturnType`    ← Full type-safe signatures
-- `func2(arg2: type): ReturnType`
+```
+src/
+├── ast/
+│   ├── plugins/
+│   │   ├── typescript.ts   # .ts .tsx .js .mjs .jsx — imports, exports, arrow fns, methods
+│   │   ├── python.ts       # .py — top-level defs, classes, imports
+│   │   └── index.ts        # Auto-registers all built-in plugins
+│   ├── extractor.ts        # Public extractDeps / extractExports API
+│   ├── function-extractor.ts  # extractFunctionCode — brace-matched body extraction
+│   ├── parser.ts           # parseFile — reads file, dispatches to plugin
+│   ├── registry.ts         # Plugin registry — keyed by file extension
+│   └── types.ts            # LanguagePlugin interface
+├── compression/
+│   └── formatter.ts        # formatVaultNote — ParseResult → .md frontmatter
+├── vault/
+│   ├── init.ts             # walkDir, runInit, generateClaudeMd, VaultRegistry
+│   └── watch.ts            # chokidar watcher, incremental re-index
+├── mcp/
+│   └── server.ts           # McpServer with 4 tools
+└── cli/
+    └── index.ts            # Commander CLI — init / watch / mcp
 ```
 
-Zero markdown boilerplate. Pure data.
+### Plugin Interface
 
-### MCP Server (Semantic Router)
+```typescript
+interface LanguagePlugin {
+  extensions: string[];
+  extractDeps(source: string): string[];
+  extractExports(source: string): string[];
+  extractFunctionCode?(source: string, functionName: string): string | null;
+}
+```
 
-- `read_repo_map` — Returns `_RepoMap.md`
-- `read_file_skeleton` — Returns `.optivault/{filename}.md`
-- `read_function_code` — Uses AST to extract function implementation (future)
-
----
-
-## Performance
-
-- **Initial scan** (1,000 files): ~2-3 seconds
-- **Incremental watch** (single file): ~100-200ms
-- **Token savings**: ~95% reduction per file (1,000 tokens → 50 tokens)
-
----
-
-## Extending to New Languages
-
-To add a new language (e.g., Go):
+### Adding a New Language
 
 ```typescript
 // src/ast/plugins/go.ts
@@ -241,70 +366,98 @@ import type { LanguagePlugin } from '../types.js';
 
 export const goPlugin: LanguagePlugin = {
   extensions: ['.go'],
-  extractDeps: (source) => {
-    // Extract import statements → ["fmt", "os", "mypackage"]
+  extractDeps(source) {
+    // Extract import paths → ["fmt", "os", "github.com/user/pkg"]
+    return [];
   },
-  extractExports: (source) => {
-    // Extract top-level exported funcs → ["main()", "InitDB(): error"]
+  extractExports(source) {
+    // Extract exported func signatures → ["main()", "InitDB(): error"]
+    return [];
+  },
+  extractFunctionCode(source, functionName) {
+    // Return the full function body or null
+    return null;
   },
 };
 ```
 
-Register in `src/ast/plugins/index.ts`:
+Register it in `src/ast/plugins/index.ts`:
 
 ```typescript
+import { goPlugin } from './go.js';
 registerPlugin(goPlugin);
 ```
 
-Done. No changes to core code.
+Done. Zero changes to core code.
+
+---
+
+## Performance
+
+| Operation | Time |
+|---|---|
+| Initial scan — 1,000 files | ~2–3 seconds |
+| Idempotent re-scan (all unchanged) | < 100ms |
+| `sync_file_context` (single file) | ~20ms |
+| Incremental watch (single file save) | ~100–200ms |
+| Token cost per file (skeleton) | ~50 tokens |
+| Token savings vs. full file read | ~95% |
+
+---
+
+## Use with Obsidian
+
+The `.optivault/` directory is a valid Obsidian vault:
+
+1. Open Obsidian → **Open folder as vault** → select `.optivault/`
+2. Every source file is a note, wikilinked via its imports
+3. Open **Graph View** to visualize your entire codebase as a dependency graph
 
 ---
 
 ## Testing
 
 ```bash
-npm test          # Run full suite (53 tests)
-npm test:watch    # Continuous mode
-npm run build     # TypeScript compilation
-npm run lint      # Type check
+npm test            # Run full suite (79 tests)
+npm run test:watch  # Continuous mode during development
+npm run build       # TypeScript compilation check
+npm run lint        # Type check without emit
 ```
+
+Test coverage includes:
+
+- TypeScript dep/export extraction — named, default, namespace, dynamic imports
+- Arrow function signature extraction (`export const fn = (x: T) => {}`)
+- Python dep/export extraction
+- `extractFunctionCode` for TS standard functions, arrow functions, class methods, Python defs
+- `runInit` — graceful fallback on parse errors, empty projects, mtime caching
+- `generateClaudeMd` — create, append, idempotent no-op
+- All 4 MCP tools — registration, happy path, ENOENT handling, `sync_file_context` patch logic
 
 ---
 
 ## FAQ
 
-**"Why not use tree-sitter bindings directly?"**
-- Regex extraction is good enough for MVP and requires zero build steps.Future: Swap regex for tree-sitter in individual plugins for higher accuracy.
+**Why regex instead of tree-sitter?**
+Regex extraction requires zero native build steps, works in every environment, and is fast enough for all practical repo sizes. Individual plugins can be upgraded to tree-sitter incrementally without touching the core.
 
-**"What about function bodies and complex logic?"**
-- `read_function_code` tool will extract them using AST when Claude needs the implementation.
-- For now, Claude analyzes signatures + dependencies—often enough to reason about code.
+**Does `read_function_code` handle generics?**
+Yes. `function fn<T = unknown>(x: T)` is matched correctly. Brace-depth tracking handles nested generics, strings, and template literals.
 
-**"Can I use this offline?"**
-- Yes. 100% offline. No API calls, no LLM backends.
+**What if a file can't be parsed?**
+`init` logs a warning and skips it. The rest of the index is unaffected and the process does not crash.
 
-**"Is this production-ready?"**
-- Yes. Tested on real codebases, strict typing, 53 passing tests, zero external deps.
+**What if `CLAUDE.md` already exists?**
+OptiVault appends only if the `<!-- optivault-protocol -->` marker is absent. Your existing content is never touched.
 
----
+**Can I run this offline?**
+Yes. 100% offline. No network calls, no API keys, no LLM backends.
 
-## Next Steps
+**Does `sync_file_context` rebuild the entire RepoMap?**
+No. It reads the existing `_RepoMap.md`, replaces or inserts just the one changed line, and writes it back. It's an O(lines in map) patch, not an O(files in repo) rebuild.
 
-1. **Scan your first project:**
-   ```bash
-   optivault init ~/my-app
-   ```
-
-2. **Open in Obsidian:**
-   Point Obsidian to `~/my-app/.optivault`
-
-3. **Register MCP in Claude Code:**
-   Add to `~/.claude/settings.json` (see above)
-
-4. **Start asking Claude:**
-   "What's the architecture?"  
-   "Where are the database calls?"  
-   "How does auth work?"
+**What languages are supported?**
+TypeScript, TSX, JavaScript, MJS, JSX, and Python out of the box. Any language can be added via the plugin interface.
 
 ---
 
