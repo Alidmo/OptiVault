@@ -1,18 +1,79 @@
 /**
  * MCP Server — Semantic Router for Claude Code
  *
- * Exposes three granular tools for hierarchical codebase traversal:
- * 1. read_repo_map - Bird's-eye view of entire repo
- * 2. read_file_skeleton - Compressed AST + deps for a specific file
- * 3. read_function_code - Extract just a specific function's source
+ * Exposes four granular tools for hierarchical codebase traversal:
+ * 1. read_repo_map       — Bird's-eye view of entire repo
+ * 2. read_file_skeleton  — Compressed AST + deps for a specific file
+ * 3. read_function_code  — Extract just a specific function's source
+ * 4. sync_file_context   — Blazing-fast single-file re-index after writes
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { join, dirname } from 'path';
 import { parseFile } from '../ast/parser.js';
+import type { ParseResult } from '../ast/parser.js';
 import { extractFunctionCode } from '../ast/function-extractor.js';
+import { formatVaultNote } from '../compression/formatter.js';
 import { z } from 'zod';
+
+// ---------------------------------------------------------------------------
+// patchRepoMapEntry — targeted single-line update in _RepoMap.md
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace or insert the _RepoMap.md entry for a single file.
+ * Reads the existing map, patches the relevant line in-place, and writes it
+ * back. This is O(lines in RepoMap) rather than O(all files in repo).
+ */
+async function patchRepoMapEntry(
+  vaultDir: string,
+  filename: string,
+  parsed: ParseResult
+): Promise<void> {
+  const repoMapPath = join(vaultDir, '_RepoMap.md');
+
+  // Derive the wikilink key the same way writeRepoMap does
+  const rel = filename.replace(/\\/g, '/');
+  const wikiKey = rel.replace(/\.[^/.]+$/, '');
+
+  // Build the replacement line
+  const parts: string[] = [];
+  if (parsed.exports.length > 0) parts.push(`exports: ${parsed.exports.join(', ')}`);
+  if (parsed.deps.length > 0) parts.push(`deps: ${parsed.deps.join(', ')}`);
+  const newLine = parts.length > 0
+    ? `- [[${wikiKey}]] — ${parts.join(' — ')}`
+    : `- [[${wikiKey}]]`;
+
+  // Read existing map (or start fresh if it doesn't exist yet)
+  let content = '';
+  try {
+    const raw = await readFile(repoMapPath, 'utf-8');
+    content = typeof raw === 'string' ? raw : '';
+  } catch {
+    content = '# RepoMap\n';
+  }
+
+  const lines = content.split('\n');
+
+  // Escape special regex chars in the wiki key (paths may contain dots)
+  const escapedKey = wikiKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pat = new RegExp(`^- \\[\\[${escapedKey}\\]\\]`);
+  const idx = lines.findIndex((l) => pat.test(l));
+
+  if (idx !== -1) {
+    lines[idx] = newLine;   // update existing entry
+  } else {
+    lines.push(newLine);    // new file — append
+  }
+
+  await writeFile(repoMapPath, lines.join('\n'), 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// startMcpServer — wire up all four tools and start the stdio transport
+// ---------------------------------------------------------------------------
 
 export async function startMcpServer(vaultDir: string, sourceDir?: string): Promise<void> {
   const server = new McpServer({ name: 'optivault', version: '0.1.0' });
@@ -78,7 +139,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
   );
 
   // ---------------------------------------------------------------------------
-  // Tool 3: read_function_code (NEW)
+  // Tool 3: read_function_code
   // ---------------------------------------------------------------------------
 
   server.tool(
@@ -101,16 +162,13 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
       }
 
       try {
-        // Reconstruct full file path from sourceDir
         const fullPath = `${sourceDir}/${filename}`;
-        const parsed = await parseFile(fullPath);
+        await parseFile(fullPath);
         const source = await readFile(fullPath, 'utf-8');
 
-        // Determine file extension
         const lastDot = filename.lastIndexOf('.');
         const ext = lastDot === -1 ? '' : filename.slice(lastDot);
 
-        // Extract just this function
         const funcCode = extractFunctionCode(source, functionName, ext);
 
         if (!funcCode) {
@@ -125,6 +183,68 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         }
 
         return { content: [{ type: 'text', text: funcCode }] };
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `File not found: ${filename}`,
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool 4: sync_file_context
+  // ---------------------------------------------------------------------------
+
+  server.tool(
+    'sync_file_context',
+    'Mandatory tool to call immediately after you modify or create a source file. It triggers a blazing-fast, single-file AST re-parse, updating the file\'s OptiVault skeleton and the master RepoMap. Returns a success confirmation.',
+    {
+      filename: z.string().describe(
+        'Source file path relative to the project root, e.g. src/auth.ts'
+      ),
+    },
+    async ({ filename }) => {
+      if (!sourceDir) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Source directory not configured for this MCP server.',
+            },
+          ],
+        };
+      }
+
+      try {
+        const fullPath = join(sourceDir, filename);
+        const parsed: ParseResult = await parseFile(fullPath);
+        const noteContent = formatVaultNote(parsed);
+
+        // Overwrite the vault note for this file
+        const notePath = join(vaultDir, filename + '.md');
+        await mkdir(dirname(notePath), { recursive: true });
+        await writeFile(notePath, noteContent, 'utf-8');
+
+        // Patch just this entry in _RepoMap.md
+        await patchRepoMapEntry(vaultDir, filename, parsed);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Successfully synced shadow context for ${filename}.`,
+            },
+          ],
+        };
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'ENOENT') {
