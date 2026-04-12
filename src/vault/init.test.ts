@@ -15,6 +15,10 @@ vi.mock('../compression/formatter.js', () => ({
 vi.mock('../config.js', () => ({
   LEGACY_VAULT_DIR: '.optivault',
   DEFAULT_VAULT_DIR: '_optivault',
+  IGNORED_DIRECTORIES: [
+    'node_modules', '.git', '.venv', 'venv', 'env', 'vendor',
+    'dist', 'build', 'coverage', '.next', '.nuxt', '__pycache__',
+  ],
   getConfig: vi.fn(() => ({ vaultDir: '_optivault' })),
 }));
 
@@ -156,6 +160,38 @@ describe('walkDir', () => {
     const files = await walkDir('/project', new Set(['_optivault']));
     expect(files).toHaveLength(1);
     expect(files[0]).toContain('auth.ts');
+  });
+
+  it('skips .venv and does not recurse into it', async () => {
+    // Project root has src/ and .venv/ — .venv should never be entered
+    mockReaddir.mockResolvedValueOnce([
+      makeDirent('src', true),
+      makeDirent('.venv', true),
+    ]).mockResolvedValueOnce([
+      // Only src/ is recursed; this returns its contents
+      makeDirent('main.py', false),
+    ]);
+    // .venv/ is never entered, so no second readdir call for it
+
+    const files = await walkDir('/project');
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain('main.py');
+    // readdir was called twice: once for root, once for src/
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips __pycache__ directories', async () => {
+    mockReaddir.mockResolvedValueOnce([
+      makeDirent('src', true),
+      makeDirent('__pycache__', true),
+    ]).mockResolvedValueOnce([
+      makeDirent('utils.py', false),
+    ]);
+
+    const files = await walkDir('/project');
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain('utils.py');
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
   });
 });
 

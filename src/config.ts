@@ -18,6 +18,26 @@ export const DEFAULT_VAULT_DIR = '_optivault';
 /** The legacy vault directory name created by earlier OptiVault versions. */
 export const LEGACY_VAULT_DIR = '.optivault';
 
+/**
+ * Directory names that are always skipped during vault walks and file watching.
+ * This covers Python virtual environments, package managers, build artefacts,
+ * and framework caches that should never appear in the vault.
+ */
+export const IGNORED_DIRECTORIES = [
+  'node_modules',
+  '.git',
+  '.venv',
+  'venv',
+  'env',
+  'vendor',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+  '.nuxt',
+  '__pycache__',
+];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

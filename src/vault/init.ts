@@ -6,7 +6,7 @@ import { join, relative, dirname, basename, normalize } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { formatVaultNote } from '../compression/formatter.js';
-import { LEGACY_VAULT_DIR } from '../config.js';
+import { LEGACY_VAULT_DIR, IGNORED_DIRECTORIES } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,7 +18,7 @@ const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.py']);
  * Directory names that are always skipped during walks.
  * The active vault directory is added dynamically at call time.
  */
-const BASE_SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
+const BASE_SKIP_DIRS = new Set(IGNORED_DIRECTORIES);
 
 /** Sentinel embedded in CLAUDE.md to detect an already-patched file. */
 const CLAUDE_MD_MARKER = '<!-- optivault-protocol -->';

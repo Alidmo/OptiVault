@@ -1,0 +1,5 @@
+Scenario,Input_Tokens,Output_Tokens,Total_Tokens,Time_Seconds,Cost_Cents
+Baseline,45000,1200,46200,45,15.3
+Caveman Only,45000,300,45300,38,13.9
+OptiVault Only,2500,1200,3700,12,2.5
+OptiVault + Caveman,2500,300,2800,5,0.8

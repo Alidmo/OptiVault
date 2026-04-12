@@ -4,6 +4,7 @@
 import { unlink, mkdir, writeFile } from 'fs/promises';
 import { join, relative, dirname, basename } from 'path';
 import chokidar from 'chokidar';
+import { IGNORED_DIRECTORIES } from '../config.js';
 import {
   runInit,
   walkDir,
@@ -47,9 +48,7 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
 
   // Patterns for directories chokidar should never watch into
   const watchIgnored = [
-    '**/node_modules/**',
-    '**/.git/**',
-    '**/dist/**',
+    ...IGNORED_DIRECTORIES.map((d) => `**/${d}/**`),
     `**/${vaultDirName}/**`,
   ];
 

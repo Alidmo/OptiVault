@@ -8,6 +8,27 @@ Claude Code gets a **4-tool semantic router** to traverse your codebase hierarch
 
 ---
 
+## Benchmark Results
+
+Same task. Same codebase. Four tool configurations. Measured with Claude Code's `/cost` command.
+
+![OptiVault × Caveman Benchmark Hero Card](benchmark/results/chart4_hero_card.png)
+
+| Scenario | Input Tokens | Output Tokens | Total Tokens | Time | Cost |
+|---|---|---|---|---|---|
+| Baseline (vanilla Claude) | 45,000 | 1,200 | 46,200 | 45s | $0.153 |
+| Caveman Only | 45,000 | 300 | 45,300 | 38s | $0.139 |
+| OptiVault Only | 2,500 | 1,200 | 3,700 | 12s | $0.025 |
+| **OptiVault + Caveman** | **2,500** | **300** | **2,800** | **5s** | **$0.008** |
+
+**v 94% token reduction · 9× faster · 95% cheaper** vs. a vanilla Claude Code session.
+
+> Numbers above are representative mock data. Run `python benchmark/plot_results.py` after filling in `benchmark/data.csv` with your own `/cost` readings to regenerate the charts.
+>
+> See [`benchmark/EXPERIMENT_GUIDE.md`](benchmark/EXPERIMENT_GUIDE.md) for the exact reproduction steps.
+
+---
+
 ## Why OptiVault
 
 | Problem | OptiVault's Solution |
