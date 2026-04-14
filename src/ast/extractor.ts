@@ -36,6 +36,15 @@ function normalizeInput(input: string): string {
     java: '.java',
     kotlin: '.kt',
     php: '.php',
+    cpp: '.cpp',
+    'c++': '.cpp',
+    cxx: '.cpp',
+    c: '.c',
+    csharp: '.cs',
+    'c#': '.cs',
+    go: '.go',
+    golang: '.go',
+    rust: '.rs',
   };
 
   return nameToExt[input] ?? input;

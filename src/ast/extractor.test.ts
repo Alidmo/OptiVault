@@ -731,3 +731,231 @@ describe('ExportExtractor — PHP', () => {
     expect(exps.extract(src, 'php')).toContain('hashPassword()');
   });
 });
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — C/C++
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — C/C++', () => {
+  it('keeps quoted local #include', () => {
+    const src = `#include "Protocol.hpp"\n#include "utils/helpers.h"`;
+    const result = deps.extract(src, 'cpp');
+    expect(result).toContain('Protocol');
+    expect(result).toContain('helpers');
+  });
+
+  it('filters angle-bracket system #include', () => {
+    const src = `#include <windows.h>\n#include <vector>\n#include <string>`;
+    expect(deps.extract(src, 'cpp')).toHaveLength(0);
+  });
+
+  it('strips .hpp extension from dep name', () => {
+    const src = `#include "common/Protocol.hpp"`;
+    expect(deps.extract(src, 'cpp')).toContain('Protocol');
+  });
+
+  it('works with .h alias', () => {
+    const src = `#include "mylib.h"`;
+    expect(deps.extract(src, '.h')).toContain('mylib');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — C/C++
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — C/C++', () => {
+  it('extracts a struct', () => {
+    const src = `struct Rect { int x, y, w, h; };`;
+    expect(exps.extract(src, 'cpp')).toContain('Rect');
+  });
+
+  it('extracts a namespace', () => {
+    const src = `namespace winbot { }`;
+    expect(exps.extract(src, 'cpp')).toContain('winbot');
+  });
+
+  it('extracts a class', () => {
+    const src = `class MyService { };`;
+    expect(exps.extract(src, 'cpp')).toContain('MyService');
+  });
+
+  it('extracts an enum', () => {
+    const src = `enum class Status { Ok, Error };`;
+    expect(exps.extract(src, 'cpp')).toContain('Status');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — C#
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — C#', () => {
+  it('excludes System.* BCL namespaces', () => {
+    const src = `using System.Collections.Generic;\nusing System.Threading.Tasks;`;
+    expect(deps.extract(src, 'csharp')).toHaveLength(0);
+  });
+
+  it('excludes Microsoft.* namespaces', () => {
+    const src = `using Microsoft.AspNetCore.Mvc;`;
+    expect(deps.extract(src, 'csharp')).not.toContain('Mvc');
+  });
+
+  it('includes project-internal using', () => {
+    const src = `using MyApp.Services;\nusing MyApp.Models;`;
+    const result = deps.extract(src, 'csharp');
+    expect(result).toContain('Services');
+    expect(result).toContain('Models');
+  });
+
+  it('handles static using', () => {
+    const src = `using static MyApp.Constants;`;
+    expect(deps.extract(src, 'csharp')).toContain('Constants');
+  });
+
+  it('handles aliased using', () => {
+    const src = `using Alias = MyApp.Utils;`;
+    expect(deps.extract(src, 'csharp')).toContain('Utils');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — C#
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — C#', () => {
+  it('extracts a public class', () => {
+    const src = `public class UserController {}`;
+    expect(exps.extract(src, 'csharp')).toContain('UserController');
+  });
+
+  it('extracts an interface', () => {
+    const src = `public interface IUserRepository {}`;
+    expect(exps.extract(src, 'csharp')).toContain('IUserRepository');
+  });
+
+  it('extracts a record', () => {
+    const src = `public record UserDto(int Id, string Name);`;
+    expect(exps.extract(src, 'csharp')).toContain('UserDto');
+  });
+
+  it('extracts an abstract class', () => {
+    const src = `public abstract class BaseService {}`;
+    expect(exps.extract(src, 'csharp')).toContain('BaseService');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — Go
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — Go', () => {
+  it('filters stdlib packages (no dot in first segment)', () => {
+    const src = `import (\n\t"fmt"\n\t"net/http"\n\t"encoding/json"\n)`;
+    expect(deps.extract(src, 'go')).toHaveLength(0);
+  });
+
+  it('filters known external domains', () => {
+    const src = `import "github.com/gin-gonic/gin"`;
+    expect(deps.extract(src, 'go')).not.toContain('gin');
+  });
+
+  it('includes project-internal imports', () => {
+    const src = `import "mycompany.com/myapp/internal/handler"`;
+    expect(deps.extract(src, 'go')).toContain('handler');
+  });
+
+  it('handles block imports with mixed paths', () => {
+    const src = `import (\n\t"fmt"\n\t"mycompany.com/myapp/service"\n)`;
+    const result = deps.extract(src, 'go');
+    expect(result).not.toContain('fmt');
+    expect(result).toContain('service');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — Go
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — Go', () => {
+  it('extracts exported func (uppercase)', () => {
+    const src = `func HandleRequest(w http.ResponseWriter, r *http.Request) {}`;
+    expect(exps.extract(src, 'go')).toContain('HandleRequest(w http.ResponseWriter, r *http.Request)');
+  });
+
+  it('does not export unexported func (lowercase)', () => {
+    const src = `func internalHelper() {}`;
+    expect(exps.extract(src, 'go')).not.toContain('internalHelper');
+  });
+
+  it('extracts exported struct', () => {
+    const src = `type UserService struct {}`;
+    expect(exps.extract(src, 'go')).toContain('UserService');
+  });
+
+  it('extracts exported interface', () => {
+    const src = `type Repository interface {}`;
+    expect(exps.extract(src, 'go')).toContain('Repository');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — Rust
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — Rust', () => {
+  it('filters std:: and core:: crates', () => {
+    const src = `use std::collections::HashMap;\nuse core::fmt;`;
+    expect(deps.extract(src, 'rust')).toHaveLength(0);
+  });
+
+  it('filters known external crates', () => {
+    const src = `use tokio::runtime::Runtime;\nuse serde::{Serialize, Deserialize};`;
+    expect(deps.extract(src, 'rust')).toHaveLength(0);
+  });
+
+  it('includes crate-local use paths', () => {
+    const src = `use crate::models::User;\nuse crate::services::auth;`;
+    const result = deps.extract(src, 'rust');
+    expect(result).toContain('User');
+    expect(result).toContain('auth');
+  });
+
+  it('includes mod declarations', () => {
+    const src = `pub mod handlers;\nmod utils;`;
+    const result = deps.extract(src, 'rust');
+    expect(result).toContain('handlers');
+    expect(result).toContain('utils');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — Rust
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — Rust', () => {
+  it('extracts pub fn', () => {
+    const src = `pub fn process_request(req: Request) -> Response {}`;
+    expect(exps.extract(src, 'rust')).toContain('process_request(req: Request)');
+  });
+
+  it('extracts pub struct', () => {
+    const src = `pub struct UserRepository {}`;
+    expect(exps.extract(src, 'rust')).toContain('UserRepository');
+  });
+
+  it('extracts pub enum', () => {
+    const src = `pub enum AppError { NotFound, Unauthorized }`;
+    expect(exps.extract(src, 'rust')).toContain('AppError');
+  });
+
+  it('extracts pub trait', () => {
+    const src = `pub trait Repository {}`;
+    expect(exps.extract(src, 'rust')).toContain('Repository');
+  });
+
+  it('does not export private items', () => {
+    const src = `fn internal_helper() {}`;
+    expect(exps.extract(src, 'rust')).not.toContain('internal_helper');
+  });
+});

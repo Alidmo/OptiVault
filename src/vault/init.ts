@@ -12,7 +12,24 @@ import { LEGACY_VAULT_DIR, IGNORED_DIRECTORIES } from '../config.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const SUPPORTED_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.py', '.java', '.kt', '.kts', '.php']);
+const SUPPORTED_EXTENSIONS = new Set([
+  // TypeScript / JavaScript
+  '.ts', '.tsx', '.js', '.mjs', '.jsx',
+  // Python
+  '.py',
+  // JVM
+  '.java', '.kt', '.kts',
+  // PHP
+  '.php',
+  // C / C++
+  '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+  // C#
+  '.cs',
+  // Go
+  '.go',
+  // Rust
+  '.rs',
+]);
 
 /**
  * Directory names that are always skipped during walks.
