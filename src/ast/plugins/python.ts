@@ -45,15 +45,93 @@ function normaliseDep(raw: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// External package filter
+// ---------------------------------------------------------------------------
+
+/**
+ * Python standard-library modules + ubiquitous third-party packages.
+ * Imports whose top-level name appears here are excluded from the dep graph
+ * so they don't create orphaned nodes in Obsidian.
+ * Project-internal absolute imports (e.g. `from myapp.models import User`)
+ * are kept because their top-level name won't appear in this set.
+ */
+const PYTHON_EXTERNAL_PACKAGES = new Set([
+  // ── Standard library ──────────────────────────────────────────────────────
+  '__future__', 'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat',
+  'asyncio', 'asyncore', 'atexit', 'audioop', 'base64', 'bdb', 'binascii',
+  'bisect', 'builtins', 'bz2', 'calendar', 'cgi', 'cgitb', 'chunk', 'cmath',
+  'cmd', 'code', 'codecs', 'codeop', 'collections', 'colorsys', 'compileall',
+  'concurrent', 'configparser', 'contextlib', 'contextvars', 'copy', 'copyreg',
+  'cProfile', 'csv', 'ctypes', 'curses', 'dataclasses', 'datetime', 'dbm',
+  'decimal', 'difflib', 'dis', 'doctest', 'email', 'encodings', 'enum',
+  'errno', 'faulthandler', 'filecmp', 'fileinput', 'fnmatch', 'fractions',
+  'ftplib', 'functools', 'gc', 'getopt', 'getpass', 'gettext', 'glob',
+  'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'idlelib',
+  'imaplib', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json',
+  'keyword', 'lib2to3', 'linecache', 'locale', 'logging', 'lzma', 'mailbox',
+  'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc',
+  'numbers', 'operator', 'optparse', 'os', 'pathlib', 'pdb', 'pickle',
+  'pickletools', 'pkgutil', 'platform', 'plistlib', 'poplib', 'pprint',
+  'profile', 'pstats', 'pty', 'py_compile', 'pyclbr', 'pydoc', 'queue',
+  'random', 're', 'readline', 'reprlib', 'resource', 'rlcompleter', 'runpy',
+  'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil',
+  'signal', 'site', 'smtpd', 'smtplib', 'socket', 'socketserver', 'sqlite3',
+  'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess',
+  'sys', 'sysconfig', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile', 'test',
+  'textwrap', 'threading', 'time', 'timeit', 'tkinter', 'token', 'tokenize',
+  'tomllib', 'trace', 'traceback', 'tracemalloc', 'types', 'typing',
+  'unicodedata', 'unittest', 'urllib', 'uuid', 'venv', 'warnings', 'wave',
+  'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xml', 'xmlrpc',
+  'zipapp', 'zipfile', 'zipimport', 'zlib', 'zoneinfo',
+  // ── Common third-party ────────────────────────────────────────────────────
+  'torch', 'torchvision', 'torchaudio', 'torchmetrics',
+  'numpy', 'pandas', 'scipy', 'sklearn', 'matplotlib', 'seaborn', 'plotly',
+  'tensorflow', 'keras', 'transformers', 'huggingface_hub', 'datasets',
+  'tokenizers', 'accelerate', 'diffusers', 'tqdm', 'einops', 'timm',
+  'fastapi', 'flask', 'django', 'starlette', 'uvicorn', 'gunicorn',
+  'aiohttp', 'httpx', 'requests', 'websockets', 'httptools',
+  'sqlalchemy', 'alembic', 'pymongo', 'motor', 'redis', 'celery', 'kombu',
+  'boto3', 'botocore', 'pydantic', 'attrs', 'marshmallow',
+  'click', 'typer', 'rich', 'colorama', 'loguru',
+  'pytest', 'mock', 'hypothesis', 'faker', 'factory_boy',
+  'yaml', 'toml', 'dotenv', 'decouple', 'dynaconf',
+  'PIL', 'cv2', 'imageio', 'skimage',
+  'cryptography', 'jwt', 'passlib', 'bcrypt',
+  'telegram', 'telebot', 'aiogram',
+  'openai', 'anthropic', 'groq', 'langchain', 'pinecone', 'chromadb',
+  'psutil', 'docker', 'paramiko', 'fabric',
+  'psycopg2', 'pymysql', 'asyncpg', 'aiomysql',
+  'jinja2', 'babel', 'arrow', 'dateutil', 'pytz', 'pendulum',
+  'grpc', 'protobuf', 'kafka', 'pika', 'nats',
+  'networkx', 'sympy', 'statsmodels',
+  'scrapy', 'bs4', 'lxml', 'selenium', 'playwright',
+  'stripe', 'twilio', 'sendgrid',
+  'sentry_sdk', 'prometheus_client', 'datadog',
+  'locust', 'pytest_asyncio',
+]);
+
+/**
+ * Return true when the top-level name of an import is an external package
+ * (stdlib or well-known third-party).
+ */
+function isExternalPythonPackage(topLevel: string): boolean {
+  return PYTHON_EXTERNAL_PACKAGES.has(topLevel);
+}
+
+// ---------------------------------------------------------------------------
 // Extraction Logic
 // ---------------------------------------------------------------------------
 
 /**
- * Extract all import dependency names from Python source text.
+ * Extract project-local import dependency names from Python source text.
  *
- * Handles:
- *  - `import module` / `import a, b, c`
- *  - `from .relative import ...` / `from module import ...`
+ * Rules:
+ *  - Relative imports (`from .module import`, `from ..pkg import`) are ALWAYS
+ *    included — they are guaranteed to reference project-local files.
+ *  - Absolute `from X import` and `import X` statements are included only when
+ *    X is NOT a known external package (stdlib or common third-party), so that
+ *    internal absolute imports like `from myapp.models import User` still
+ *    appear as graph edges while stdlib noise (`os`, `sys`, `json`) is filtered.
  */
 function extractPythonDeps(source: string): string[] {
   const deps: string[] = [];
@@ -62,9 +140,18 @@ function extractPythonDeps(source: string): string[] {
   const fromImport = /^[ \t]*from\s+([\w.]+)\s+import\b/gm;
   let m: RegExpExecArray | null;
   while ((m = fromImport.exec(source)) !== null) {
-    // Strip leading dots (relative import markers)
-    const mod = m[1].replace(/^\.+/, '');
-    if (mod) deps.push(normaliseDep(mod));
+    const raw = m[1];
+    if (raw.startsWith('.')) {
+      // Relative import — always include
+      const mod = raw.replace(/^\.+/, '');
+      if (mod) deps.push(normaliseDep(mod));
+    } else {
+      // Absolute import — include only if not an external package
+      const topLevel = raw.split('.')[0] ?? raw;
+      if (!isExternalPythonPackage(topLevel)) {
+        deps.push(normaliseDep(raw));
+      }
+    }
   }
 
   // import module [as alias] [, module2 [as alias2] ...]
@@ -72,11 +159,11 @@ function extractPythonDeps(source: string): string[] {
   while ((m = plainImport.exec(source)) !== null) {
     const names = m[1].split(',');
     for (const name of names) {
-      // Handle `module as alias` — take only the module part
       const base = name.trim().split(/\s+as\s+/i)[0].trim();
-      // For dotted names like `os.path`, take the top-level module
       const topLevel = base.split('.')[0];
-      if (topLevel) deps.push(normaliseDep(topLevel));
+      if (topLevel && !isExternalPythonPackage(topLevel)) {
+        deps.push(normaliseDep(topLevel));
+      }
     }
   }
 
@@ -160,6 +247,80 @@ function extractPyFunctionCode(source: string, functionName: string): string | n
 }
 
 // ---------------------------------------------------------------------------
+// Module Purpose Extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a one-line module purpose from Python source.
+ *
+ * Priority order:
+ *  1. First non-empty line of a triple-double-quoted module docstring (`"""..."""`)
+ *  2. First non-empty line of a triple-single-quoted module docstring (`'''...'''`)
+ *  3. First meaningful line of a consecutive leading `#` comment block
+ *
+ * Returns null if no purpose can be determined.
+ */
+function extractPyModulePurpose(source: string): string | null {
+  // Strip leading coding declarations / shebang lines before looking for docstring
+  const stripped = source.replace(/^(#!.*\n|#.*coding.*\n)*/m, '');
+
+  // Triple-double-quote docstring
+  const tripleDoubleMatch = /^\s*"""([\s\S]*?)"""/.exec(stripped);
+  if (tripleDoubleMatch) {
+    const lines = tripleDoubleMatch[1]
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) return lines[0];
+  }
+
+  // Triple-single-quote docstring
+  const tripleSingleMatch = /^\s*'''([\s\S]*?)'''/.exec(stripped);
+  if (tripleSingleMatch) {
+    const lines = tripleSingleMatch[1]
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) return lines[0];
+  }
+
+  // Consecutive leading # comment block (from original source)
+  const commentBlock = /^((?:[ \t]*#[^\n]*\n)+)/.exec(source);
+  if (commentBlock) {
+    const lines = commentBlock[1]
+      .split('\n')
+      .map((l) => l.replace(/^[ \t]*#\s?/, '').trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) return lines[0];
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Entry Point Detection
+// ---------------------------------------------------------------------------
+
+const PY_ENTRY_STEMS = new Set(['main', 'app', 'server', 'entry', '__main__', 'run', 'start']);
+
+/**
+ * Determine if a Python file is a program entry point.
+ *
+ * Checks:
+ *  - Presence of `if __name__ == "__main__":` idiom
+ *  - Filename stem matches common entry point names
+ */
+function isPyEntryPoint(source: string, filePath: string): boolean {
+  if (/if\s+__name__\s*==\s*['"]__main__['"]\s*:/.test(source)) return true;
+
+  const basename = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const stem = basename.replace(/\.[^/.]+$/, '').toLowerCase();
+  if (PY_ENTRY_STEMS.has(stem)) return true;
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin Implementation
 // ---------------------------------------------------------------------------
 
@@ -168,4 +329,6 @@ export const pythonPlugin: LanguagePlugin = {
   extractDeps: extractPythonDeps,
   extractExports: extractPythonExports,
   extractFunctionCode: extractPyFunctionCode,
+  extractModulePurpose: extractPyModulePurpose,
+  isEntryPoint: isPyEntryPoint,
 };

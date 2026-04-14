@@ -2,7 +2,7 @@
 // Uses the plugin-based extractor to parse files in any registered language.
 
 import { readFile } from 'fs/promises';
-import { extractDeps, extractExports, DependencyExtractor, ExportExtractor } from './extractor.js';
+import { extractDeps, extractExports, extractModulePurpose, detectEntryPoint, DependencyExtractor, ExportExtractor } from './extractor.js';
 
 export { DependencyExtractor, ExportExtractor };
 
@@ -11,9 +11,11 @@ export { DependencyExtractor, ExportExtractor };
 // ---------------------------------------------------------------------------
 
 export interface ParseResult {
-  deps: string[];    // Obsidian wikilink targets e.g. ['database', 'crypto']
-  exports: string[]; // Exported function/class signatures e.g. ['verifyToken(token: string)']
+  deps: string[];        // Obsidian wikilink targets e.g. ['database', 'crypto']
+  exports: string[];     // Exported function/class signatures e.g. ['verifyToken(token: string)']
   filePath: string;
+  purpose?: string;      // Module-level purpose extracted from docstring or leading comment
+  isEntryPoint?: true;   // Present (true) when the file is a program entry point
 }
 
 // ---------------------------------------------------------------------------
@@ -52,9 +54,14 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
 
   const source = await readFile(filePath, 'utf8');
 
+  const purpose = extractModulePurpose(source, ext);
+  const entryPoint = detectEntryPoint(source, filePath, ext);
+
   return {
     deps: extractDeps(source, ext),
     exports: extractExports(source, ext),
     filePath,
+    ...(purpose ? { purpose } : {}),
+    ...(entryPoint ? { isEntryPoint: true as const } : {}),
   };
 }

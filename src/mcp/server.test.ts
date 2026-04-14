@@ -59,7 +59,7 @@ vi.mock('../compression/formatter.js', () => ({
 }));
 
 // Import under test after mocks are in place
-import { startMcpServer } from './server.js';
+import { startMcpServer, getTestFileCandidates } from './server.js';
 import { parseFile } from '../ast/parser.js';
 import { formatVaultNote } from '../compression/formatter.js';
 import type { ParseResult } from '../ast/parser.js';
@@ -144,6 +144,12 @@ describe('MCP server – semantic routing tools', () => {
     };
 
     expect(result.content[0].text).toContain('No skeleton found');
+  });
+
+  it('registers read_tests_for_file tool', async () => {
+    await startMcpServer(VAULT_DIR, SOURCE_DIR);
+    expect(capturedTools['read_tests_for_file']).toBeDefined();
+    expect(typeof capturedTools['read_tests_for_file']).toBe('function');
   });
 });
 
@@ -252,5 +258,115 @@ describe('sync_file_context', () => {
     expect(result.content[0].text).toContain(`File not found: ${FILENAME}`);
     // writeFile must not have been called
     expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// read_tests_for_file
+// ---------------------------------------------------------------------------
+
+describe('read_tests_for_file', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWriteFile.mockResolvedValue(undefined);
+    mockMkdir.mockResolvedValue(undefined);
+    for (const key of Object.keys(capturedTools)) {
+      delete capturedTools[key];
+    }
+  });
+
+  it('returns error when sourceDir is not configured', async () => {
+    await startMcpServer(VAULT_DIR); // no sourceDir
+    const handler = capturedTools['read_tests_for_file'];
+    const result = (await handler({ filename: 'src/auth.ts' })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(result.content[0].text).toContain('Source directory not configured');
+  });
+
+  it('returns test file content when first candidate is found', async () => {
+    const testContent = `import { describe, it } from 'vitest';`;
+    mockReadFile.mockResolvedValueOnce(testContent);
+
+    await startMcpServer(VAULT_DIR, SOURCE_DIR);
+    const handler = capturedTools['read_tests_for_file'];
+    const result = (await handler({ filename: 'src/auth.ts' })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(result.content[0].text).toContain(testContent);
+    expect(result.content[0].text).toContain('auth.test.ts');
+  });
+
+  it('tries subsequent candidates when first is missing', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const testContent = `describe('auth', () => {});`;
+    // First candidate (auth.test.ts) fails; second (auth.spec.ts) succeeds
+    mockReadFile
+      .mockRejectedValueOnce(enoent)
+      .mockResolvedValueOnce(testContent);
+
+    await startMcpServer(VAULT_DIR, SOURCE_DIR);
+    const handler = capturedTools['read_tests_for_file'];
+    const result = (await handler({ filename: 'src/auth.ts' })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(result.content[0].text).toContain(testContent);
+  });
+
+  it('returns not-found message when no candidate exists', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    // All candidates fail
+    mockReadFile.mockRejectedValue(enoent);
+
+    await startMcpServer(VAULT_DIR, SOURCE_DIR);
+    const handler = capturedTools['read_tests_for_file'];
+    const result = (await handler({ filename: 'src/auth.ts' })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(result.content[0].text).toContain('No test file found');
+    expect(result.content[0].text).toContain('src/auth.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getTestFileCandidates (pure unit tests — no IO)
+// ---------------------------------------------------------------------------
+
+describe('getTestFileCandidates', () => {
+  it('generates .test.ts as first candidate for a .ts file', () => {
+    const candidates = getTestFileCandidates('src/auth.ts');
+    expect(candidates[0]).toBe('src/auth.test.ts');
+  });
+
+  it('generates .spec.ts as second candidate', () => {
+    const candidates = getTestFileCandidates('src/auth.ts');
+    expect(candidates[1]).toBe('src/auth.spec.ts');
+  });
+
+  it('generates __tests__ candidate', () => {
+    const candidates = getTestFileCandidates('src/auth.ts');
+    expect(candidates).toContain('src/__tests__/auth.test.ts');
+  });
+
+  it('generates test_*.py as first candidate for a .py file', () => {
+    const candidates = getTestFileCandidates('src/auth.py');
+    expect(candidates[0]).toBe('src/test_auth.py');
+  });
+
+  it('generates tests/ candidate for Python', () => {
+    const candidates = getTestFileCandidates('src/auth.py');
+    expect(candidates).toContain('tests/test_auth.py');
+  });
+
+  it('returns empty array for unsupported extension', () => {
+    expect(getTestFileCandidates('src/styles.css')).toHaveLength(0);
+  });
+
+  it('handles files without a directory prefix', () => {
+    const candidates = getTestFileCandidates('auth.ts');
+    expect(candidates[0]).toBe('auth.test.ts');
   });
 });

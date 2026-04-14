@@ -139,34 +139,48 @@ function normaliseDep(raw: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract all import/require dependency names from TypeScript source text.
+ * Return true for import paths that reference a project-local file.
+ * Only relative paths (starting with `./` or `../`) count.
+ * External npm packages and Node builtins are excluded to keep the
+ * Obsidian graph free of orphaned package nodes.
+ */
+function isRelativeImport(raw: string): boolean {
+  return raw.startsWith('./') || raw.startsWith('../');
+}
+
+/**
+ * Extract project-local import dependency names from TypeScript source text.
+ *
+ * Only relative imports (`./module`, `../util`) are emitted as wikilink-ready
+ * dep names. External packages (`express`, `@scope/pkg`, `path`) are skipped
+ * to prevent orphaned nodes in the Obsidian graph.
  *
  * Handles:
- *  - `import ... from 'module'`
- *  - `import 'module'` (side-effect import)
- *  - `require('module')`
- *  - `import('module')` (dynamic import)
+ *  - `import ... from './module'`
+ *  - `import './side-effect'` (side-effect import)
+ *  - `require('./module')`
+ *  - `import('./lazy')` (dynamic import)
  */
 function extractTypeScriptDeps(source: string): string[] {
   const deps: string[] = [];
 
-  // Static import:  import ... from 'path'
+  // Static import:  import ... from './path'
   const staticImport = /\bfrom\s+(['"`])([^'"`\n]+)\1/g;
   let m: RegExpExecArray | null;
   while ((m = staticImport.exec(source)) !== null) {
-    deps.push(normaliseDep(m[2]));
+    if (isRelativeImport(m[2])) deps.push(normaliseDep(m[2]));
   }
 
-  // Side-effect import:  import 'path'
+  // Side-effect import:  import './path'
   const sideEffect = /\bimport\s+(['"`])([^'"`\n]+)\1/g;
   while ((m = sideEffect.exec(source)) !== null) {
-    deps.push(normaliseDep(m[2]));
+    if (isRelativeImport(m[2])) deps.push(normaliseDep(m[2]));
   }
 
-  // require('path') and import('path')
+  // require('./path') and import('./path')
   const requireOrDynamic = /\b(?:require|import)\s*\(\s*(['"`])([^'"`\n]+)\1\s*\)/g;
   while ((m = requireOrDynamic.exec(source)) !== null) {
-    deps.push(normaliseDep(m[2]));
+    if (isRelativeImport(m[2])) deps.push(normaliseDep(m[2]));
   }
 
   return dedupe(deps);
@@ -229,6 +243,81 @@ function extractTypeScriptExports(source: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Module Purpose Extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a one-line module purpose from TypeScript/JavaScript source.
+ *
+ * Priority order:
+ *  1. First meaningful line of a leading JSDoc block (`/** ... *\/`)
+ *  2. First meaningful line of a leading block comment (`/* ... *\/`)
+ *  3. First meaningful line of a consecutive leading `//` comment block
+ *
+ * Returns null if no leading comment can be found.
+ */
+function extractTSModulePurpose(source: string): string | null {
+  // JSDoc: /** ... */
+  const jsdocMatch = /^\/\*\*([\s\S]*?)\*\//m.exec(source);
+  if (jsdocMatch && source.trimStart().startsWith('/**')) {
+    const lines = jsdocMatch[1]
+      .split('\n')
+      .map((l) => l.replace(/^\s*\*\s?/, '').trim())
+      .filter((l) => l.length > 0 && !l.startsWith('@'));
+    if (lines.length > 0) return lines[0];
+  }
+
+  // Block comment: /* ... */
+  const blockMatch = /^\/\*([\s\S]*?)\*\//m.exec(source);
+  if (blockMatch && source.trimStart().startsWith('/*') && !source.trimStart().startsWith('/**')) {
+    const lines = blockMatch[1]
+      .split('\n')
+      .map((l) => l.replace(/^\s*\*\s?/, '').trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) return lines[0];
+  }
+
+  // Consecutive leading // comment lines
+  const lineCommentMatch = /^((?:[ \t]*\/\/[^\n]*\n)+)/.exec(source);
+  if (lineCommentMatch) {
+    const lines = lineCommentMatch[1]
+      .split('\n')
+      .map((l) => l.replace(/^[ \t]*\/\/\s?/, '').trim())
+      .filter((l) => l.length > 0);
+    if (lines.length > 0) return lines[0];
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Entry Point Detection
+// ---------------------------------------------------------------------------
+
+const ENTRY_POINT_STEMS = new Set(['index', 'main', 'app', 'server', 'entry', 'bootstrap']);
+
+/**
+ * Determine if a TypeScript/JavaScript file is a program entry point.
+ *
+ * Checks:
+ *  - Filename stem is a known entry point name (index, main, app, server, entry, bootstrap)
+ *  - `export default function main()` pattern
+ *  - Common server startup calls (app.listen, createServer, express())
+ */
+function isTSEntryPoint(source: string, filePath: string): boolean {
+  const basename = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const stem = basename.replace(/\.[^/.]+$/, '').toLowerCase();
+  if (ENTRY_POINT_STEMS.has(stem)) return true;
+
+  if (/export\s+default\s+function\s+main\b/.test(source)) return true;
+  if (/\bapp\.listen\s*\(/.test(source)) return true;
+  if (/\bcreateServer\s*\(/.test(source)) return true;
+  if (/\bexpress\s*\(\s*\)/.test(source)) return true;
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin Implementation
 // ---------------------------------------------------------------------------
 
@@ -237,4 +326,6 @@ export const typescriptPlugin: LanguagePlugin = {
   extractDeps: extractTypeScriptDeps,
   extractExports: extractTypeScriptExports,
   extractFunctionCode: extractTSFunctionCode,
+  extractModulePurpose: extractTSModulePurpose,
+  isEntryPoint: isTSEntryPoint,
 };

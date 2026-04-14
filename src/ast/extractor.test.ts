@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DependencyExtractor, ExportExtractor } from './extractor.js';
+import { DependencyExtractor, ExportExtractor, extractModulePurpose, detectEntryPoint } from './extractor.js';
 import { extractFunctionCode } from './function-extractor.js';
 
 // ---------------------------------------------------------------------------
@@ -40,14 +40,21 @@ describe('DependencyExtractor — TypeScript', () => {
     expect(deps.extract(src, 'typescript')).toContain('bar');
   });
 
-  it('strips @scope/ prefix from scoped packages', () => {
+  it('excludes non-relative scoped package imports', () => {
+    // Only relative imports create graph edges; absolute npm packages are excluded
     const src = `import { x } from '@scope/my-package'`;
-    expect(deps.extract(src, 'typescript')).toContain('my-package');
+    expect(deps.extract(src, 'typescript')).not.toContain('my-package');
   });
 
-  it('handles require() calls', () => {
+  it('excludes non-relative require() calls', () => {
+    // require('path') is a Node built-in — not relative, so excluded
     const src = `const path = require('path')`;
-    expect(deps.extract(src, 'typescript')).toContain('path');
+    expect(deps.extract(src, 'typescript')).not.toContain('path');
+  });
+
+  it('includes relative require() calls', () => {
+    const src = `const db = require('./db/pool')`;
+    expect(deps.extract(src, 'typescript')).toContain('pool');
   });
 
   it('handles dynamic import()', () => {
@@ -55,7 +62,7 @@ describe('DependencyExtractor — TypeScript', () => {
     expect(deps.extract(src, 'typescript')).toContain('lazy-module');
   });
 
-  it('extracts multiple deps from a single source file', () => {
+  it('extracts multiple deps from a single source file, skipping external packages', () => {
     const src = [
       `import { verifyToken } from './auth'`,
       `import bcrypt from 'bcryptjs'`,
@@ -63,7 +70,7 @@ describe('DependencyExtractor — TypeScript', () => {
     ].join('\n');
     const result = deps.extract(src, 'typescript');
     expect(result).toContain('auth');
-    expect(result).toContain('bcryptjs');
+    expect(result).not.toContain('bcryptjs'); // external npm package — excluded
     expect(result).toContain('pool');
   });
 
@@ -185,22 +192,32 @@ describe('ExportExtractor — TypeScript', () => {
 // ---------------------------------------------------------------------------
 
 describe('DependencyExtractor — Python', () => {
-  it('extracts a plain import', () => {
-    const src = `import crypto`;
-    expect(deps.extract(src, 'python')).toContain('crypto');
+  it('extracts a project-internal plain import (unknown top-level)', () => {
+    // 'myapp' is not in the external-package blocklist → included as a dep
+    const src = `import myapp`;
+    expect(deps.extract(src, 'python')).toContain('myapp');
   });
 
-  it('extracts multiple modules from one import line', () => {
+  it('excludes stdlib modules from plain import', () => {
+    // os, sys, pathlib are stdlib → all filtered out
     const src = `import os, sys, pathlib`;
     const result = deps.extract(src, 'python');
-    expect(result).toContain('os');
-    expect(result).toContain('sys');
-    expect(result).toContain('pathlib');
+    expect(result).not.toContain('os');
+    expect(result).not.toContain('sys');
+    expect(result).not.toContain('pathlib');
+    expect(result).toHaveLength(0);
   });
 
-  it('extracts from-import absolute', () => {
+  it('excludes stdlib from-import absolute', () => {
+    // hashlib is stdlib → excluded
     const src = `from hashlib import sha256`;
-    expect(deps.extract(src, 'python')).toContain('hashlib');
+    expect(deps.extract(src, 'python')).not.toContain('hashlib');
+  });
+
+  it('includes internal absolute from-import (unknown package)', () => {
+    // myapp.models is not external → included as full dotted path
+    const src = `from myapp.models import User`;
+    expect(deps.extract(src, 'python')).toContain('myapp.models');
   });
 
   it('extracts from-import relative (strips leading dots)', () => {
@@ -213,18 +230,24 @@ describe('DependencyExtractor — Python', () => {
     expect(deps.extract(src, 'python')).toContain('database');
   });
 
-  it('handles import with alias', () => {
+  it('excludes common third-party packages (numpy)', () => {
+    // numpy is in the external blocklist → excluded
     const src = `import numpy as np`;
-    expect(deps.extract(src, 'python')).toContain('numpy');
+    expect(deps.extract(src, 'python')).not.toContain('numpy');
   });
 
-  it('deduplicates repeated imports', () => {
-    const src = `import os\nimport os`;
+  it('includes project-internal import with alias', () => {
+    const src = `import myutils as mu`;
+    expect(deps.extract(src, 'python')).toContain('myutils');
+  });
+
+  it('deduplicates repeated internal imports', () => {
+    const src = `import mymodule\nimport mymodule`;
     const result = deps.extract(src, 'python');
-    expect(result.filter((d) => d === 'os')).toHaveLength(1);
+    expect(result.filter((d) => d === 'mymodule')).toHaveLength(1);
   });
 
-  it('extracts multiple deps across many lines', () => {
+  it('filters stdlib and keeps only internal deps across many lines', () => {
     const src = [
       `import os`,
       `import sys`,
@@ -232,10 +255,16 @@ describe('DependencyExtractor — Python', () => {
       `from .utils import helper`,
     ].join('\n');
     const result = deps.extract(src, 'python');
-    expect(result).toContain('os');
-    expect(result).toContain('sys');
-    expect(result).toContain('pathlib');
-    expect(result).toContain('utils');
+    expect(result).not.toContain('os');
+    expect(result).not.toContain('sys');
+    expect(result).not.toContain('pathlib');
+    expect(result).toContain('utils'); // relative import → always included
+  });
+
+  it('keeps relative imports regardless of name overlap with stdlib', () => {
+    // Even if the module name matches a stdlib name, relative imports always pass
+    const src = `from .os import something`;
+    expect(deps.extract(src, 'python')).toContain('os');
   });
 });
 
@@ -398,5 +427,307 @@ describe('extractFunctionCode — Python', () => {
   it('returns null for an unknown function name', () => {
     const src = `def foo():\n    pass`;
     expect(extractFunctionCode(src, 'bar', '.py')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractModulePurpose — TypeScript
+// ---------------------------------------------------------------------------
+
+describe('extractModulePurpose — TypeScript', () => {
+  it('extracts the first meaningful line of a JSDoc block', () => {
+    const src = [
+      '/**',
+      ' * Authentication utilities for the API layer.',
+      ' * @module auth',
+      ' */',
+      'export function verifyToken() {}',
+    ].join('\n');
+    expect(extractModulePurpose(src, '.ts')).toBe('Authentication utilities for the API layer.');
+  });
+
+  it('skips @tag lines in JSDoc and returns the description', () => {
+    const src = [
+      '/**',
+      ' * @module auth',
+      ' * Handles JWT verification.',
+      ' */',
+    ].join('\n');
+    expect(extractModulePurpose(src, '.ts')).toBe('Handles JWT verification.');
+  });
+
+  it('extracts the first line of a leading // comment block', () => {
+    const src = [
+      '// Database connection pooling module.',
+      '// Manages PgPool lifecycle.',
+      'import { Pool } from "pg";',
+    ].join('\n');
+    expect(extractModulePurpose(src, '.ts')).toBe('Database connection pooling module.');
+  });
+
+  it('returns null when there is no leading comment', () => {
+    const src = `import { x } from './x';\nexport function foo() {}`;
+    expect(extractModulePurpose(src, '.ts')).toBeNull();
+  });
+
+  it('works with .js extension', () => {
+    const src = `// Utility helpers\nexport const noop = () => {};`;
+    expect(extractModulePurpose(src, '.js')).toBe('Utility helpers');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractModulePurpose — Python
+// ---------------------------------------------------------------------------
+
+describe('extractModulePurpose — Python', () => {
+  it('extracts the first line of a triple-double-quote module docstring', () => {
+    const src = [
+      '"""',
+      'Database connection pooling.',
+      'Manages SQLAlchemy session lifecycle.',
+      '"""',
+      'import sqlalchemy',
+    ].join('\n');
+    expect(extractModulePurpose(src, '.py')).toBe('Database connection pooling.');
+  });
+
+  it('extracts an inline triple-quote docstring on one line', () => {
+    const src = `"""Handles user authentication."""\nimport os`;
+    expect(extractModulePurpose(src, '.py')).toBe('Handles user authentication.');
+  });
+
+  it('extracts the first meaningful line from a leading # comment block', () => {
+    const src = [
+      '# Auth helpers for the API.',
+      '# Provides JWT utilities.',
+      'import jwt',
+    ].join('\n');
+    expect(extractModulePurpose(src, '.py')).toBe('Auth helpers for the API.');
+  });
+
+  it('returns null when there is no leading docstring or comment', () => {
+    const src = `import os\ndef foo():\n    pass`;
+    expect(extractModulePurpose(src, '.py')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEntryPoint — TypeScript
+// ---------------------------------------------------------------------------
+
+describe('detectEntryPoint — TypeScript', () => {
+  it('detects index.ts by filename', () => {
+    expect(detectEntryPoint('export {}', 'src/index.ts', '.ts')).toBe(true);
+  });
+
+  it('detects main.ts by filename', () => {
+    expect(detectEntryPoint('export {}', 'src/main.ts', '.ts')).toBe(true);
+  });
+
+  it('detects server.ts by filename', () => {
+    expect(detectEntryPoint('', 'src/server.ts', '.ts')).toBe(true);
+  });
+
+  it('detects export default function main()', () => {
+    const src = `export default function main() { app.listen(3000); }`;
+    expect(detectEntryPoint(src, 'src/start.ts', '.ts')).toBe(true);
+  });
+
+  it('detects app.listen() call', () => {
+    const src = `const app = express();\napp.listen(3000);`;
+    expect(detectEntryPoint(src, 'src/run.ts', '.ts')).toBe(true);
+  });
+
+  it('returns false for a regular utility module', () => {
+    const src = `export function hash(s: string) { return s; }`;
+    expect(detectEntryPoint(src, 'src/utils/hash.ts', '.ts')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectEntryPoint — Python
+// ---------------------------------------------------------------------------
+
+describe('detectEntryPoint — Python', () => {
+  it('detects if __name__ == "__main__": idiom', () => {
+    const src = [
+      'def run():',
+      '    pass',
+      '',
+      'if __name__ == "__main__":',
+      '    run()',
+    ].join('\n');
+    expect(detectEntryPoint(src, 'src/run.py', '.py')).toBe(true);
+  });
+
+  it('detects main.py by filename', () => {
+    expect(detectEntryPoint('import os', 'src/main.py', '.py')).toBe(true);
+  });
+
+  it('returns false for a regular utility module', () => {
+    const src = `def hash_password(plain):\n    return plain`;
+    expect(detectEntryPoint(src, 'src/utils/hashing.py', '.py')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — Java
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — Java', () => {
+  it('excludes java.* stdlib imports', () => {
+    const src = `import java.util.List;\nimport java.io.IOException;`;
+    const result = deps.extract(src, 'java');
+    expect(result).not.toContain('List');
+    expect(result).not.toContain('IOException');
+  });
+
+  it('excludes org.springframework imports', () => {
+    const src = `import org.springframework.web.bind.annotation.RestController;`;
+    expect(deps.extract(src, 'java')).not.toContain('RestController');
+  });
+
+  it('includes project-internal imports', () => {
+    const src = `import com.myapp.service.UserService;\nimport com.myapp.model.User;`;
+    const result = deps.extract(src, 'java');
+    expect(result).toContain('UserService');
+    expect(result).toContain('User');
+  });
+
+  it('handles wildcard imports', () => {
+    const src = `import com.myapp.repository.*;`;
+    expect(deps.extract(src, 'java')).not.toContain('*');
+  });
+
+  it('handles static imports', () => {
+    const src = `import static com.myapp.Utils.helper;`;
+    expect(deps.extract(src, 'java')).toContain('helper');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — Java
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — Java', () => {
+  it('extracts a public class', () => {
+    const src = `public class UserService {}`;
+    expect(exps.extract(src, 'java')).toContain('UserService');
+  });
+
+  it('extracts an interface', () => {
+    const src = `public interface Repository {}`;
+    expect(exps.extract(src, 'java')).toContain('Repository');
+  });
+
+  it('extracts an enum', () => {
+    const src = `public enum Status { ACTIVE, INACTIVE }`;
+    expect(exps.extract(src, 'java')).toContain('Status');
+  });
+
+  it('extracts an abstract class', () => {
+    const src = `public abstract class BaseService {}`;
+    expect(exps.extract(src, 'java')).toContain('BaseService');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — Kotlin
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — Kotlin', () => {
+  it('excludes kotlin.* stdlib imports', () => {
+    const src = `import kotlin.collections.List\nimport kotlinx.coroutines.launch`;
+    const result = deps.extract(src, 'kotlin');
+    expect(result).not.toContain('List');
+    expect(result).not.toContain('launch');
+  });
+
+  it('includes project-internal imports', () => {
+    const src = `import com.myapp.domain.User\nimport com.myapp.service.AuthService`;
+    const result = deps.extract(src, 'kotlin');
+    expect(result).toContain('User');
+    expect(result).toContain('AuthService');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — Kotlin
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — Kotlin', () => {
+  it('extracts a data class', () => {
+    const src = `data class User(val id: Long, val name: String)`;
+    expect(exps.extract(src, 'kotlin')).toContain('User');
+  });
+
+  it('extracts an object declaration', () => {
+    const src = `object UserRepository {}`;
+    expect(exps.extract(src, 'kotlin')).toContain('UserRepository');
+  });
+
+  it('extracts a top-level fun', () => {
+    const src = `fun main(args: Array<String>) {}`;
+    expect(exps.extract(src, 'kotlin')).toContain('main(args: Array<String>)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DependencyExtractor — PHP
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — PHP', () => {
+  it('excludes Symfony/Laravel framework namespaces', () => {
+    const src = `<?php\nuse Symfony\\Component\\HttpFoundation\\Request;\nuse Illuminate\\Support\\Facades\\DB;`;
+    const result = deps.extract(src, 'php');
+    expect(result).not.toContain('Request');
+    expect(result).not.toContain('DB');
+  });
+
+  it('includes project-internal use statements', () => {
+    const src = `<?php\nuse App\\Models\\User;\nuse App\\Services\\AuthService;`;
+    const result = deps.extract(src, 'php');
+    expect(result).toContain('User');
+    expect(result).toContain('AuthService');
+  });
+
+  it('extracts relative require_once paths', () => {
+    const src = `<?php\nrequire_once('./helpers/utils.php');`;
+    expect(deps.extract(src, 'php')).toContain('utils');
+  });
+
+  it('handles group use statements', () => {
+    const src = `<?php\nuse App\\Models\\{ User, Post, Comment };`;
+    const result = deps.extract(src, 'php');
+    expect(result).toContain('User');
+    expect(result).toContain('Post');
+    expect(result).toContain('Comment');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportExtractor — PHP
+// ---------------------------------------------------------------------------
+
+describe('ExportExtractor — PHP', () => {
+  it('extracts a class', () => {
+    const src = `<?php\nclass UserController {}`;
+    expect(exps.extract(src, 'php')).toContain('UserController');
+  });
+
+  it('extracts an interface', () => {
+    const src = `<?php\ninterface RepositoryInterface {}`;
+    expect(exps.extract(src, 'php')).toContain('RepositoryInterface');
+  });
+
+  it('extracts a trait', () => {
+    const src = `<?php\ntrait Timestampable {}`;
+    expect(exps.extract(src, 'php')).toContain('Timestampable');
+  });
+
+  it('extracts a top-level function', () => {
+    const src = `<?php\nfunction hashPassword($plain) { return md5($plain); }`;
+    expect(exps.extract(src, 'php')).toContain('hashPassword()');
   });
 });

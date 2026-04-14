@@ -11,7 +11,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, extname } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { extractFunctionCode } from '../ast/function-extractor.js';
@@ -69,6 +69,46 @@ async function patchRepoMapEntry(
   }
 
   await writeFile(repoMapPath, lines.join('\n'), 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// getTestFileCandidates — derive likely test file paths from a source path
+// ---------------------------------------------------------------------------
+
+/**
+ * Return an ordered list of candidate test file paths for a given source file.
+ * Follows common TypeScript/JavaScript (.test.ts, .spec.ts, __tests__/) and
+ * Python (test_*.py, *_test.py, tests/) conventions.
+ */
+export function getTestFileCandidates(filename: string): string[] {
+  const normalised = filename.replace(/\\/g, '/');
+  const lastSlash = normalised.lastIndexOf('/');
+  const dir = lastSlash === -1 ? '' : normalised.slice(0, lastSlash);
+  const basename = lastSlash === -1 ? normalised : normalised.slice(lastSlash + 1);
+  const ext = extname(basename);
+  const stem = basename.slice(0, basename.length - ext.length);
+  const prefix = dir ? `${dir}/` : '';
+
+  if (ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.mjs') {
+    return [
+      `${prefix}${stem}.test${ext}`,
+      `${prefix}${stem}.spec${ext}`,
+      `${prefix}__tests__/${stem}.test${ext}`,
+      `tests/${stem}.test${ext}`,
+      `test/${stem}.test${ext}`,
+    ];
+  }
+
+  if (ext === '.py') {
+    return [
+      `${prefix}test_${stem}.py`,
+      `${prefix}${stem}_test.py`,
+      `tests/test_${stem}.py`,
+      `test/test_${stem}.py`,
+    ];
+  }
+
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +184,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'read_function_code',
-    'Extract the raw source code for a specific function. Use this after read_file_skeleton to get the actual implementation.',
+    'Surgically extract the raw source of a specific function — touch only what you must. Use after read_file_skeleton to target the exact function body without reading the whole file. Minimum viable read.',
     {
       filename: z.string().describe('Source file path, e.g. src/auth.ts'),
       functionName: z.string().describe('Function or method name to extract'),
@@ -206,7 +246,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'sync_file_context',
-    'Mandatory tool to call immediately after you modify or create a source file. It triggers a blazing-fast, single-file AST re-parse, updating the file\'s OptiVault skeleton and the master RepoMap. Returns a success confirmation.',
+    'MANDATORY after every surgical write. Triggers a single-file AST re-parse — updates the skeleton and patches the RepoMap in ~20ms. Step 3 of the verification loop: Read → Write+Verify → Sync. Never skip this.',
     {
       filename: z.string().describe(
         'Source file path relative to the project root, e.g. src/auth.ts'
@@ -259,6 +299,58 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         }
         throw err;
       }
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool 5: read_tests_for_file
+  // ---------------------------------------------------------------------------
+
+  server.tool(
+    'read_tests_for_file',
+    'Locate and return the test file for a given source file. Use before or after a surgical change to verify behavior. Supports TypeScript (.test.ts, .spec.ts, __tests__/) and Python (test_*.py) conventions.',
+    {
+      filename: z.string().describe('Source file path, e.g. src/auth.ts'),
+    },
+    async ({ filename }) => {
+      if (!sourceDir) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Source directory not configured for this MCP server.',
+            },
+          ],
+        };
+      }
+
+      const candidates = getTestFileCandidates(filename);
+
+      for (const candidate of candidates) {
+        const fullPath = join(sourceDir, candidate);
+        try {
+          const content = await readFile(fullPath, 'utf-8');
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `// Test file: ${candidate}\n${content}`,
+              },
+            ],
+          };
+        } catch {
+          // Try next candidate
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `No test file found for ${filename}. Looked for: ${candidates.join(', ')}`,
+          },
+        ],
+      };
     }
   );
 

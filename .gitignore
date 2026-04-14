@@ -4,3 +4,4 @@ dist/
 .claude/
 *.js.map
 coverage/
+_optivault

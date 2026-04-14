@@ -31,7 +31,11 @@ function normalizeInput(input: string): string {
   // Legacy language name → extension mapping
   const nameToExt: Record<string, string> = {
     typescript: '.ts',
+    javascript: '.js',
     python: '.py',
+    java: '.java',
+    kotlin: '.kt',
+    php: '.php',
   };
 
   return nameToExt[input] ?? input;
@@ -77,6 +81,35 @@ export function extractExports(source: string, extOrLanguage: string): string[] 
     );
   }
   return plugin.extractExports(source);
+}
+
+/**
+ * Extract the module-level purpose from source code using the appropriate plugin.
+ *
+ * @param source Source code text
+ * @param extOrLanguage File extension (e.g. '.ts', '.py') or legacy language name
+ * @returns One-line purpose string, or null if unavailable
+ */
+export function extractModulePurpose(source: string, extOrLanguage: string): string | null {
+  const ext = normalizeInput(extOrLanguage);
+  const plugin = getPlugin(ext);
+  if (!plugin?.extractModulePurpose) return null;
+  return plugin.extractModulePurpose(source);
+}
+
+/**
+ * Determine whether a source file is a program entry point using the appropriate plugin.
+ *
+ * @param source Source code text
+ * @param filePath Absolute or relative file path (used for filename heuristics)
+ * @param extOrLanguage File extension (e.g. '.ts', '.py') or legacy language name
+ * @returns true when the file is identified as an entry point
+ */
+export function detectEntryPoint(source: string, filePath: string, extOrLanguage: string): boolean {
+  const ext = normalizeInput(extOrLanguage);
+  const plugin = getPlugin(ext);
+  if (!plugin?.isEntryPoint) return false;
+  return plugin.isEntryPoint(source, filePath);
 }
 
 /**
