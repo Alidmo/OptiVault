@@ -69,6 +69,33 @@ OptiVault provides Input Compression (AST Skeletons). When paired with Julius Br
 Execution:
 Added directives in the generated CLAUDE.md to instruct the AI to speak in terse, filler-free structures.
 Next Steps: Execute benchmarking script to plot Input vs. Output token costs, visualizing the ~94% reduction to use for social media marketing (Reddit/Twitter/LinkedIn) to drive open-source adoption.
+🗃️ [Z-010] Clean Graph — Dependency Noise Elimination
+Tags: #graph #python #typescript #signal-to-noise #bug-fix
+Related: [[Z-003]], [[Z-004]]
+Date: 2026-04-14
+Concept:
+After running OptiVault across a multi-project workspace, the Obsidian graph filled with orphaned nodes: `os`, `sys`, `json`, `torch`, `fastapi`, `math` — Python stdlib and popular third-party packages that every file imported but that had no corresponding vault note. The graph was unreadable. The same problem existed on the TypeScript side with `express`, `bcryptjs`, `path`, etc.
+Execution:
+TypeScript plugin: the dep extractor now emits only relative imports (`./` or `../`). External npm packages (absolute specifiers) are silently dropped. This means only project-internal wikilinks are created — no orphaned `express` or `react` nodes.
+Python plugin: added `PYTHON_EXTERNAL_PACKAGES` — a ~180-entry `Set` covering the full Python stdlib and the most common third-party packages (torch, numpy, pandas, fastapi, django, redis, pydantic, pytest, etc.). Filter rules: relative imports (dot-prefixed) always pass through; absolute imports pass only if the top-level package is NOT in the set; unknown absolute imports (project-internal like `from myapp.models import User`) are preserved as graph edges. Result: zero stdlib/framework noise in any Python vault.
+Test suite: updated 8 existing tests to match the new filtering semantics; added 4 new tests covering relative-import passthrough, stdlib exclusion, internal-package preservation, and the edge case where a relative import's name shadows a stdlib name.
+
+🗃️ [Z-011] Multi-Language Expansion — Java, Kotlin, PHP
+Tags: #plugins #java #kotlin #php #extensibility
+Related: [[Z-004]]
+Date: 2026-04-14
+Concept:
+Several projects in the workspace (OpenCoroutineProxy, OpenReserve, OpenSentiment, OpenLegacyGuard) had completely empty vaults — zero notes, no graph — because their primary languages (Kotlin, Java, PHP) were unsupported. The plugin architecture from Z-004 made adding them surgical.
+Execution:
+Java plugin (`.java`): extracts `class`, `interface`, `enum`, `record`, `@interface` declarations; filters JDK (`java.*`, `javax.*`), Spring (`org.springframework.*`), Apache (`org.apache.*`), Google (`com.google.*`), Jackson, Lombok, Android, and 15+ other framework prefixes; detects entry points via `public static void main(String` signature and `@SpringBootApplication` annotation.
+Kotlin plugin (`.kt`, `.kts`): extracts `class`, `data class`, `sealed class`, `object`, `interface`, and top-level `fun` declarations (with full parameter signatures); filters `kotlin.*`, `kotlinx.*`, `android.*`, `androidx.*`, `io.ktor.*`, `org.springframework.*`, and JDK prefixes; detects entry points via `fun main(` and `@SpringBootApplication`.
+PHP plugin (`.php`): extracts `class`, `interface`, `trait`, `enum` declarations and top-level functions; filters Symfony, Laravel/Illuminate, Doctrine, PSR, PHPUnit, Twig, Carbon, GuzzleHttp, Monolog, and 10+ other framework root namespaces; handles grouped `use` syntax (`use App\Models\{User, Post}`), aliased `use` statements, and relative `require`/`require_once` paths; strips `<?php` before comment extraction.
+All three plugins implement the full `LanguagePlugin` interface: `extractDeps`, `extractExports`, `extractFunctionCode`, `extractModulePurpose`, `isEntryPoint`.
+`normalizeInput` in `extractor.ts` extended with language-name aliases (`java`, `kotlin`, `php`, `javascript`).
+`SUPPORTED_EXTENSIONS` in `init.ts` extended to include `.java`, `.kt`, `.kts`, `.php`.
+22 new tests added covering dep filtering, export extraction for each language, and entry-point detection.
+Test suite: 143 → 169 (all passing). Re-ran init on all 13 projects — OpenCoroutineProxy, OpenReserve, OpenSentiment, OpenLegacyGuard all produce full vaults with clean graphs.
+
 🗃️ [Z-008] Semantic Graph Upgrade — Purpose, Entry Points & Dataview
 Tags: #knowledge-graph #obsidian #dataview #ast #epic-1
 Related: [[Z-003]], [[Z-004]]

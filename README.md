@@ -1,6 +1,7 @@
-# OptiVault
-
-**Zero-Dependency AST-Driven Context Compiler and MCP Server for Claude Code**
+<table><tr>
+<td><h1>OptiVault</h1><strong>Zero-Dependency AST-Driven Context Compiler and MCP Server for Claude Code</strong></td>
+<td><img src="opendoc-graph.gif" width="260" align="right"/></td>
+</tr></table>
 
 OptiVault solves the "token bloat" problem with the most direct approach: no LLMs, no summarization, no external API calls. It extracts your repo's structure—function signatures, arrow functions, class methods, dependencies—using pure AST parsing, writes a compressed shadow vault, and exposes it via the MCP protocol.
 
