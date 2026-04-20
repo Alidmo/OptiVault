@@ -41,7 +41,6 @@ import {
   VaultRegistry,
   walkDir,
   generateClaudeMd,
-  ensureGitignored,
   migrateLegacyVault,
 } from './init.js';
 import { parseFile } from '../ast/parser.js';
@@ -200,7 +199,7 @@ describe('walkDir', () => {
 // ---------------------------------------------------------------------------
 
 describe('runInit', () => {
-  it('writes notes, _RepoMap.md, CLAUDE.md, and .gitignore on a fresh project', async () => {
+  it('writes notes, _RepoMap.md, and CLAUDE.md on a fresh project', async () => {
     mockReaddir.mockResolvedValueOnce([
       makeDirent('auth.ts', false),
       makeDirent('utils.py', false),
@@ -210,8 +209,8 @@ describe('runInit', () => {
 
     await runInit('/project', '/project/_optivault');
 
-    // 2 vault notes + 1 _RepoMap.md + 1 CLAUDE.md + 1 .gitignore
-    expect(mockWriteFile.mock.calls.length).toBe(5);
+    // 2 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(4);
   });
 
   it('skips unparseable files gracefully without crashing', async () => {
@@ -226,8 +225,8 @@ describe('runInit', () => {
 
     await expect(runInit('/project', '/project/_optivault')).resolves.toBeUndefined();
 
-    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md + 1 .gitignore
-    expect(mockWriteFile.mock.calls.length).toBe(4);
+    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(3);
   });
 
   it('completes gracefully for an empty directory', async () => {
@@ -235,8 +234,8 @@ describe('runInit', () => {
 
     await expect(runInit('/project', '/project/_optivault')).resolves.toBeUndefined();
 
-    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md + 1 .gitignore
-    expect(mockWriteFile.mock.calls.length).toBe(3);
+    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(2);
   });
 
   it('skips unchanged files when vault note is newer than source', async () => {
@@ -247,8 +246,8 @@ describe('runInit', () => {
     await runInit('/project', '/project/_optivault');
 
     expect(mockParseFile).not.toHaveBeenCalled();
-    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md + 1 .gitignore
-    expect(mockWriteFile.mock.calls.length).toBe(3);
+    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(2);
   });
 
   it('re-parses a file when its source is newer than the vault note', async () => {
@@ -260,8 +259,8 @@ describe('runInit', () => {
     await runInit('/project', '/project/_optivault');
 
     expect(mockParseFile).toHaveBeenCalledOnce();
-    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md + 1 .gitignore
-    expect(mockWriteFile.mock.calls.length).toBe(4);
+    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(3);
   });
 });
 
@@ -310,52 +309,6 @@ describe('generateClaudeMd', () => {
     mockReadFile.mockResolvedValueOnce(undefined as unknown as string);
 
     await generateClaudeMd('/project', 'my_custom_vault');
-
-    const [, content] = mockWriteFile.mock.calls[0] as [string, string, string];
-    expect(content).toContain('my_custom_vault');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ensureGitignored
-// ---------------------------------------------------------------------------
-
-describe('ensureGitignored', () => {
-  it('creates .gitignore with the entry when none exists', async () => {
-    mockReadFile.mockResolvedValueOnce(undefined as unknown as string);
-
-    await ensureGitignored('/project', '_optivault');
-
-    expect(mockWriteFile).toHaveBeenCalledOnce();
-    const [path, content] = mockWriteFile.mock.calls[0] as [string, string, string];
-    expect(path).toContain('.gitignore');
-    expect(content).toContain('_optivault');
-  });
-
-  it('appends the entry to an existing .gitignore', async () => {
-    const existing = 'node_modules\ndist\n';
-    mockReadFile.mockResolvedValueOnce(existing as unknown as string);
-
-    await ensureGitignored('/project', '_optivault');
-
-    const [, content] = mockWriteFile.mock.calls[0] as [string, string, string];
-    expect(content).toContain('node_modules');
-    expect(content).toContain('_optivault');
-  });
-
-  it('is a no-op when the entry is already present', async () => {
-    const existing = 'node_modules\n_optivault\ndist\n';
-    mockReadFile.mockResolvedValueOnce(existing as unknown as string);
-
-    await ensureGitignored('/project', '_optivault');
-
-    expect(mockWriteFile).not.toHaveBeenCalled();
-  });
-
-  it('works with a custom vault dir name', async () => {
-    mockReadFile.mockResolvedValueOnce(undefined as unknown as string);
-
-    await ensureGitignored('/project', 'my_custom_vault');
 
     const [, content] = mockWriteFile.mock.calls[0] as [string, string, string];
     expect(content).toContain('my_custom_vault');

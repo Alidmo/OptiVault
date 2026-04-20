@@ -117,7 +117,7 @@ What happens:
 - Writes `.md` shadow notes to `~/my-project/_optivault/`
 - Generates `_RepoMap.md` — master index of the entire repo
 - Creates (or patches) `CLAUDE.md` with the OptiVault protocol directive
-- Adds the vault dir to `.gitignore` automatically
+- **Commits the vault** — the shadow vault is intended to be checked in so every collaborator gets the latest context without a local re-index
 
 **Example vault note** (`src/auth.ts.md`):
 
@@ -372,7 +372,7 @@ src/
 │   └── formatter.ts        # formatVaultNote — ParseResult → .md frontmatter
 ├── vault/
 │   ├── init.ts             # walkDir, runInit, migrateLegacyVault, generateClaudeMd,
-│   │                       #   ensureGitignored, VaultRegistry
+│   │                       #   VaultRegistry
 │   └── watch.ts            # chokidar watcher, incremental re-index
 ├── mcp/
 │   └── server.ts           # McpServer with 4 tools
@@ -492,6 +492,8 @@ Test coverage includes:
 - `migrateLegacyVault` — rename, no legacy dir, identical paths, both dirs exist guard
 - All 4 MCP tools — registration, happy path, ENOENT handling, `sync_file_context` patch/insert/replace logic
 
+**Removed:** `ensureGitignored` — the vault is now intended to be committed, so OptiVault no longer writes to `.gitignore`.
+
 ---
 
 ## FAQ
@@ -524,7 +526,7 @@ No. The first time you run `optivault init` (or `watch` or `mcp`) after upgradin
 Obsidian natively ignores any directory whose name starts with a dot. The `_optivault` default is fully visible in Obsidian's file explorer and Graph View without any plugins or workarounds.
 
 **Does OptiVault touch `.gitignore`?**
-Yes — `optivault init` appends the vault dir name to `.gitignore` if it isn't already there. It creates `.gitignore` if the file doesn't exist. It is always a no-op if the entry is already present.
+No. The shadow vault (`_optivault/`) is designed to be committed to the repo so every collaborator and CI job gets the latest compressed context without having to re-index locally. If you want it ignored, add the vault dir to `.gitignore` yourself.
 
 ---
 

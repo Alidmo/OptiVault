@@ -273,28 +273,6 @@ For every code change, follow this mandatory loop:
 }
 
 // ---------------------------------------------------------------------------
-// ensureGitignored — add vaultDir to .gitignore if not already present
-// ---------------------------------------------------------------------------
-
-export async function ensureGitignored(projectDir: string, entry: string): Promise<void> {
-  const gitignorePath = join(projectDir, '.gitignore');
-
-  let existing = '';
-  try {
-    const raw = await readFile(gitignorePath, 'utf8');
-    existing = typeof raw === 'string' ? raw : '';
-  } catch {
-    // .gitignore doesn't exist yet — will create it
-  }
-
-  const lines = existing.split('\n');
-  if (lines.some((l) => l.trim() === entry)) return; // already present
-
-  const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-  await writeFile(gitignorePath, existing + separator + entry + '\n', 'utf8');
-}
-
-// ---------------------------------------------------------------------------
 // migrateLegacyVault — rename .optivault → new vault dir if legacy exists
 // ---------------------------------------------------------------------------
 
@@ -408,9 +386,6 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
 
   // Ensure CLAUDE.md contains the OptiVault protocol directive
   await generateClaudeMd(dir, vaultDirName);
-
-  // Ensure the vault dir is gitignored
-  await ensureGitignored(dir, vaultDirName);
 }
 
 // ---------------------------------------------------------------------------
