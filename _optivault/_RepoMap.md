@@ -25,15 +25,6 @@
 - [[../../Ali/VS Code Projects/OptiVault/src/mcp/server.test]] — deps: vitest, server, parser, formatter
 - [[../../Ali/VS Code Projects/OptiVault/src/mcp/server]] — exports: getTestFileCandidates(filename: string), startMcpServer(vaultDir: string, sourceDir?: string) — deps: mcp, stdio, promises, path, parser, function-extractor, formatter, zod
 - [[src/vault/init.test]] — deps: init, parser, formatter
-- [[src/vault/init]] — exports: walkDir(
-  dir: string,
-  extraSkipDirs: ReadonlySet<string> = new Set(), processFile(filePath: string), writeRepoMap(
-  outputDir: string,
-  allParsed: ParseResult[],
-  baseDir: string
-), generateClaudeMd(dir: string, vaultDir: string), migrateLegacyVault(
-  projectDir: string,
-  resolvedOutputDir: string
-), runInit(dir: string, outputDir: string), VaultRegistry — deps: parser, formatter, config
+- [[src/vault/init]] — exports: processFile(filePath: string), generateClaudeMd(dir: string, vaultDir: string), runInit(dir: string, outputDir: string), VaultRegistry — deps: parser, formatter, config
 - [[../../Ali/VS Code Projects/OptiVault/src/vault/watch]] — exports: runWatch(dir: string, outputDir: string) — deps: promises, path, chokidar, config, init
 - [[../../Ali/VS Code Projects/OptiVault/vitest.config]] — deps: config
