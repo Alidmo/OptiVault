@@ -8,7 +8,7 @@ exp: [walkDir(
   outputDir: string,
   allParsed: ParseResult[],
   baseDir: string
-), generateClaudeMd(dir: string, vaultDir: string), migrateLegacyVault(
+), readExistingConcepts(notePath: string), generateClaudeMd(dir: string, vaultDir: string), migrateLegacyVault(
   projectDir: string,
   resolvedOutputDir: string
 ), runInit(dir: string, outputDir: string), VaultRegistry]
@@ -26,6 +26,7 @@ Provides:: `writeRepoMap(
   allParsed: ParseResult[],
   baseDir: string
 )`
+Provides:: `readExistingConcepts(notePath: string)`
 Provides:: `generateClaudeMd(dir: string, vaultDir: string)`
 Provides:: `migrateLegacyVault(
   projectDir: string,

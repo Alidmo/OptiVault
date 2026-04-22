@@ -1,0 +1,27 @@
+{
+  "task": "Find all files that transitively depend on src/ast/parser.ts up to depth 2, and list their signatures.",
+  "timestamp": "2026-04-21T21:59:21.967Z",
+  "runs": {
+    "brute_force": {
+      "files_read": 27,
+      "bytes": 221343,
+      "chars": 222510,
+      "estimated_tokens": 55628,
+      "wall_ms": 19.38740000000007,
+      "payload_preview": "// === D:\\VS Code Projects\\OptiVault\\src\\ast\\extractor.test.ts ===\nimport { describe, it, expect } from 'vitest';\nimport { DependencyExtractor, ExportExtractor, extractModulePurpose, detectEntryPoint "
+    },
+    "optivault": {
+      "files_read": 6,
+      "bytes": 3007,
+      "chars": 3258,
+      "estimated_tokens": 815,
+      "wall_ms": 8.567199999999957,
+      "payload_preview": "// === src/compression/formatter.test (depth 1) ===\n---\ntgt: D:\\VS Code Projects\\OptiVault\\src\\compression\\formatter.test.ts\ndep: [[formatter]], [[parser]]\n---\n## Inputs\nImports:: [[formatter]], [[par"
+    }
+  },
+  "deltas": {
+    "token_reduction_pct": 98.53,
+    "speedup_x": 2.26,
+    "files_read_reduction_pct": 77.78
+  }
+}

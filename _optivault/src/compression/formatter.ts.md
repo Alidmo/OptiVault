@@ -1,8 +1,9 @@
 ---
-tgt: D:\Ali\VS Code Projects\OptiVault\src\compression\formatter.ts
+tgt: D:\VS Code Projects\OptiVault\src\compression\formatter.ts
 purpose: "Formatter — Builds hierarchical Obsidian .md string from ParseResult"
 dep: [[parser]]
 exp: [formatVaultNote(parsed: ParseResult, notes?: string)]
+concepts: [Auth, Checkout]
 ---
 > Formatter — Builds hierarchical Obsidian .md string from ParseResult
 ## Inputs

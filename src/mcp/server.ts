@@ -16,6 +16,7 @@ import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { extractFunctionCode } from '../ast/function-extractor.js';
 import { formatVaultNote } from '../compression/formatter.js';
+import { readExistingConcepts } from '../vault/init.js';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -112,7 +113,96 @@ export function getTestFileCandidates(filename: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// startMcpServer — wire up all four tools and start the stdio transport
+// buildDepGraph — parse _RepoMap.md into forward/reverse adjacency maps
+// ---------------------------------------------------------------------------
+
+export interface DepGraph {
+  forward: Map<string, string[]>;
+  reverse: Map<string, string[]>;
+}
+
+/**
+ * Normalize a file key by stripping known source extensions and the leading
+ * wikilink-style path traversal prefixes (RepoMap sometimes includes
+ * ../../Ali/... for absolute-style entries — preserve the tail after the
+ * last "OptiVault/" if present).
+ */
+export function normalizeGraphKey(key: string): string {
+  let k = key.replace(/\\/g, '/').trim();
+  // Strip known source extensions
+  k = k.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|php|cpp|cc|h|hpp|cs)$/i, '');
+  return k;
+}
+
+export function buildDepGraph(repoMapContent: string): DepGraph {
+  const forward = new Map<string, string[]>();
+  const reverse = new Map<string, string[]>();
+
+  const lines = repoMapContent.split('\n');
+  const entryPat = /^- \[\[([^\]]+)\]\](.*)$/;
+
+  for (const line of lines) {
+    const m = entryPat.exec(line);
+    if (!m) continue;
+
+    const rawKey = m[1];
+    const rest = m[2];
+    const key = normalizeGraphKey(rawKey);
+
+    // Extract deps segment if present
+    const depsMatch = /—\s*deps:\s*([^—]+?)(?:\s*—|$)/.exec(rest);
+    const deps: string[] = [];
+    if (depsMatch) {
+      const depList = depsMatch[1].split(',').map((d) => normalizeGraphKey(d));
+      for (const d of depList) {
+        if (d) deps.push(d);
+      }
+    }
+
+    forward.set(key, deps);
+    for (const d of deps) {
+      const arr = reverse.get(d) ?? [];
+      arr.push(key);
+      reverse.set(d, arr);
+    }
+  }
+
+  return { forward, reverse };
+}
+
+/**
+ * BFS traversal up to `depth`. Returns unique {file, depth} entries at
+ * their first-discovered depth.
+ */
+export function traverseGraph(
+  adjacency: Map<string, string[]>,
+  from: string,
+  depth: number
+): Array<{ file: string; depth: number }> {
+  const results: Array<{ file: string; depth: number }> = [];
+  const seen = new Set<string>([from]);
+  let frontier: string[] = [from];
+
+  for (let d = 1; d <= depth; d++) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      const neighbors = adjacency.get(node) ?? [];
+      for (const nb of neighbors) {
+        if (seen.has(nb)) continue;
+        seen.add(nb);
+        results.push({ file: nb, depth: d });
+        next.push(nb);
+      }
+    }
+    if (next.length === 0) break;
+    frontier = next;
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// startMcpServer — wire up all MCP tools and start the stdio transport
 // ---------------------------------------------------------------------------
 
 export async function startMcpServer(vaultDir: string, sourceDir?: string): Promise<void> {
@@ -124,7 +214,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'read_repo_map',
-    'Fetches the high-level architecture map of the entire codebase. Shows files, exports, and dependencies.',
+    "Bird's-eye structural map of the repo. Call this first if you've never queried the graph in this session; otherwise prefer query_graph for specific traversal questions.",
     {},
     async () => {
       const repoMapPath = `${vaultDir}/_RepoMap.md`;
@@ -154,7 +244,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'read_file_skeleton',
-    'Fetch the ultra-compressed AST skeleton (deps + signatures) for a specific file.',
+    'Compressed signatures + deps for one file. Use AFTER query_graph has identified the relevant file. Never use as exploration; use as confirmation.',
     { filename: z.string().describe('Source file path, e.g. src/auth.ts') },
     async ({ filename }) => {
       const filePath = `${vaultDir}/${filename}.md`;
@@ -184,7 +274,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'read_function_code',
-    'Surgically extract the raw source of a specific function — touch only what you must. Use after read_file_skeleton to target the exact function body without reading the whole file. Minimum viable read.',
+    'Surgically extract the raw source of a specific function — minimum viable read. Banned as an exploration tool; only use when you know the exact function name from a prior skeleton or graph call.',
     {
       filename: z.string().describe('Source file path, e.g. src/auth.ts'),
       functionName: z.string().describe('Function or method name to extract'),
@@ -267,10 +357,17 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
       try {
         const fullPath = join(sourceDir, filename);
         const parsed: ParseResult = await parseFile(fullPath);
+
+        // Merge forward any pre-existing concepts from the vault note
+        const notePath = join(vaultDir, filename + '.md');
+        const existingConcepts = await readExistingConcepts(notePath);
+        if (existingConcepts.length > 0) {
+          parsed.concepts = existingConcepts;
+        }
+
         const noteContent = formatVaultNote(parsed);
 
         // Overwrite the vault note for this file
-        const notePath = join(vaultDir, filename + '.md');
         await mkdir(dirname(notePath), { recursive: true });
         await writeFile(notePath, noteContent, 'utf-8');
 
@@ -308,7 +405,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'read_tests_for_file',
-    'Locate and return the test file for a given source file. Use before or after a surgical change to verify behavior. Supports TypeScript (.test.ts, .spec.ts, __tests__/) and Python (test_*.py) conventions.',
+    'Fetch the test file for a source file before writing a change — tests define the contract you must not break. Supports TypeScript (.test.ts, .spec.ts, __tests__/) and Python (test_*.py) conventions.',
     {
       filename: z.string().describe('Source file path, e.g. src/auth.ts'),
     },
@@ -348,6 +445,87 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
           {
             type: 'text',
             text: `No test file found for ${filename}. Looked for: ${candidates.join(', ')}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool 6: query_graph
+  // ---------------------------------------------------------------------------
+
+  server.tool(
+    'query_graph',
+    "PRIMARY wayfinding tool. Use this to answer 'what depends on X' or 'what calls X' instead of opening files. Returns a traversal of the AST dependency graph — no file bodies, no guessing.",
+    {
+      from: z.string().describe('Source file path, e.g. src/auth.ts'),
+      relation: z
+        .enum(['dependencies', 'callers'])
+        .describe('"dependencies" = files `from` imports; "callers" = files that import `from`'),
+      depth: z
+        .number()
+        .int()
+        .min(1)
+        .max(5)
+        .describe('Traversal depth (1 = direct only). Capped at 5.'),
+    },
+    async ({ from, relation, depth }) => {
+      const cappedDepth = Math.min(Math.max(1, depth), 5);
+      const repoMapPath = `${vaultDir}/_RepoMap.md`;
+
+      let content: string;
+      try {
+        content = await readFile(repoMapPath, 'utf-8');
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  from,
+                  relation,
+                  depth: cappedDepth,
+                  results: [],
+                  message: 'RepoMap not found. Run "optivault init" to generate it.',
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+
+      const graph = buildDepGraph(content);
+      const normalizedFrom = normalizeGraphKey(from);
+      const adjacency = relation === 'dependencies' ? graph.forward : graph.reverse;
+
+      if (!graph.forward.has(normalizedFrom) && !graph.reverse.has(normalizedFrom)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                from,
+                relation,
+                depth: cappedDepth,
+                results: [],
+                message: `'${from}' not found in RepoMap.`,
+              }),
+            },
+          ],
+        };
+      }
+
+      const results = traverseGraph(adjacency, normalizedFrom, cappedDepth);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ from, relation, depth: cappedDepth, results }),
           },
         ],
       };

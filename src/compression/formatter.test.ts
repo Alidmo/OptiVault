@@ -214,4 +214,39 @@ describe('formatVaultNote', () => {
     const outputsIdx = result.indexOf('## Outputs');
     expect(inputsIdx).toBeLessThan(outputsIdx);
   });
+
+  // -------------------------------------------------------------------------
+  // Task 2: concepts frontmatter (self-learning merge)
+  // -------------------------------------------------------------------------
+
+  it('emits concepts frontmatter line when parsed.concepts is non-empty', () => {
+    const parsed: ParseResult = { ...baseParsed, concepts: ['Auth'] };
+    const result = formatVaultNote(parsed);
+    expect(result).toContain('concepts: [Auth]');
+  });
+
+  it('emits multi-item concepts array as bare YAML', () => {
+    const parsed: ParseResult = { ...baseParsed, concepts: ['Auth', 'Checkout'] };
+    const result = formatVaultNote(parsed);
+    expect(result).toContain('concepts: [Auth, Checkout]');
+  });
+
+  it('omits the concepts line when concepts is undefined', () => {
+    const result = formatVaultNote(baseParsed);
+    expect(result).not.toContain('concepts:');
+  });
+
+  it('omits the concepts line when concepts is an empty array', () => {
+    const parsed: ParseResult = { ...baseParsed, concepts: [] };
+    const result = formatVaultNote(parsed);
+    expect(result).not.toContain('concepts:');
+  });
+
+  it('concepts line appears after exp line in frontmatter', () => {
+    const parsed: ParseResult = { ...baseParsed, concepts: ['Auth'] };
+    const result = formatVaultNote(parsed);
+    const expIdx = result.indexOf('exp:');
+    const conceptsIdx = result.indexOf('concepts:');
+    expect(expIdx).toBeLessThan(conceptsIdx);
+  });
 });

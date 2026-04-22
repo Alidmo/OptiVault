@@ -4,7 +4,7 @@
 - [[src/ast/extractor.test]] — deps: extractor, function-extractor, database, router, utils, helpers, bar, auth, pool, x, lazy-module
 - [[src/ast/extractor]] — exports: extractDeps(source: string, extOrLanguage: string), extractExports(source: string, extOrLanguage: string), extractModulePurpose(source: string, extOrLanguage: string), detectEntryPoint(source: string, filePath: string, extOrLanguage: string), DependencyExtractor, ExportExtractor — deps: registry, index
 - [[../../Ali/VS Code Projects/OptiVault/src/ast/function-extractor]] — deps: registry, index
-- [[../../Ali/VS Code Projects/OptiVault/src/ast/parser]] — exports: parseFile(filePath: string), ParseResult — deps: promises, extractor
+- [[src/ast/parser]] — exports: parseFile(filePath: string), ParseResult — deps: extractor
 - [[src/ast/plugins/cpp]] — exports: cppPlugin — deps: types
 - [[src/ast/plugins/csharp]] — exports: csharpPlugin — deps: types
 - [[src/ast/plugins/go]] — exports: goPlugin — deps: types
@@ -18,13 +18,14 @@
 - [[../../Ali/VS Code Projects/OptiVault/src/ast/registry]] — exports: registerPlugin(plugin: LanguagePlugin), getPlugin(ext: string), registeredExtensions() — deps: types
 - [[../../Ali/VS Code Projects/OptiVault/src/ast/types]] — exports: LanguagePlugin
 - [[../../Ali/VS Code Projects/OptiVault/src/cli/index]] — deps: commander, path, config, init, watch, server
-- [[../../Ali/VS Code Projects/OptiVault/src/compression/formatter.test]] — deps: vitest, formatter, parser
-- [[../../Ali/VS Code Projects/OptiVault/src/compression/formatter]] — exports: formatVaultNote(parsed: ParseResult, notes?: string) — deps: parser
+- [[src/compression/formatter.test]] — deps: formatter, parser
+- [[src/compression/formatter]] — exports: formatVaultNote(parsed: ParseResult, notes?: string) — deps: parser
 - [[../../Ali/VS Code Projects/OptiVault/src/config.test]] — deps: vitest, config, fs
 - [[../../Ali/VS Code Projects/OptiVault/src/config]] — exports: getConfig(cwd: string), DEFAULT_VAULT_DIR, LEGACY_VAULT_DIR, IGNORED_DIRECTORIES, OptiVaultConfig — deps: fs, path
-- [[../../Ali/VS Code Projects/OptiVault/src/mcp/server.test]] — deps: vitest, server, parser, formatter
-- [[../../Ali/VS Code Projects/OptiVault/src/mcp/server]] — exports: getTestFileCandidates(filename: string), startMcpServer(vaultDir: string, sourceDir?: string) — deps: mcp, stdio, promises, path, parser, function-extractor, formatter, zod
+- [[src/mcp/query_graph.test]] — deps: server
+- [[src/mcp/server.test]] — deps: server, parser, formatter
+- [[src/mcp/server]] — exports: getTestFileCandidates(filename: string), normalizeGraphKey(key: string), buildDepGraph(repoMapContent: string), startMcpServer(vaultDir: string, sourceDir?: string), DepGraph — deps: parser, function-extractor, formatter, init
 - [[src/vault/init.test]] — deps: init, parser, formatter
-- [[src/vault/init]] — exports: processFile(filePath: string), generateClaudeMd(dir: string, vaultDir: string), runInit(dir: string, outputDir: string), VaultRegistry — deps: parser, formatter, config
+- [[src/vault/init]] — exports: processFile(filePath: string), readExistingConcepts(notePath: string), generateClaudeMd(dir: string, vaultDir: string), runInit(dir: string, outputDir: string), VaultRegistry — deps: parser, formatter, config
 - [[../../Ali/VS Code Projects/OptiVault/src/vault/watch]] — exports: runWatch(dir: string, outputDir: string) — deps: promises, path, chokidar, config, init
 - [[../../Ali/VS Code Projects/OptiVault/vitest.config]] — deps: config

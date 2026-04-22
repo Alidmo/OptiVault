@@ -27,6 +27,11 @@ export function formatVaultNote(parsed: ParseResult, notes?: string): string {
     lines.push(`exp: [${parsed.exports.join(', ')}]`);
   }
 
+  // Concepts — merged forward from the pre-existing vault note (self-learning)
+  if (parsed.concepts && parsed.concepts.length > 0) {
+    lines.push(`concepts: [${parsed.concepts.join(', ')}]`);
+  }
+
   lines.push('---');
 
   // Purpose — displayed as a blockquote so it reads first in both Obsidian and LLM context

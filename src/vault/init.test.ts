@@ -42,6 +42,7 @@ import {
   walkDir,
   generateClaudeMd,
   migrateLegacyVault,
+  readExistingConcepts,
 } from './init.js';
 import { parseFile } from '../ast/parser.js';
 import { formatVaultNote } from '../compression/formatter.js';
@@ -281,6 +282,11 @@ describe('generateClaudeMd', () => {
     expect(content).toContain('sync_file_context');
     expect(content).toContain('<!-- optivault-protocol -->');
     expect(content).toContain('Shadow vault: `_optivault/`');
+    expect(content).toContain('Senior Agent Navigation Protocol');
+    expect(content).toContain('query_graph');
+    expect(content).toContain('PENALTY');
+    expect(content).toContain('Karpathy');
+    expect(content).toContain('Caveman');
   });
 
   it('appends the protocol to an existing CLAUDE.md that lacks the marker', async () => {
@@ -378,6 +384,107 @@ describe('migrateLegacyVault', () => {
 // ---------------------------------------------------------------------------
 // VaultRegistry
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// readExistingConcepts
+// ---------------------------------------------------------------------------
+
+describe('readExistingConcepts', () => {
+  it('returns bare array concepts from frontmatter', async () => {
+    const note = [
+      '---',
+      'tgt: src/auth.ts',
+      'concepts: [Auth, Checkout]',
+      '---',
+      '## Inputs',
+    ].join('\n');
+    mockReadFile.mockResolvedValueOnce(note as unknown as string);
+
+    const result = await readExistingConcepts('/vault/src/auth.ts.md');
+    expect(result).toEqual(['Auth', 'Checkout']);
+  });
+
+  it('returns [] for a note without a concepts line', async () => {
+    const note = [
+      '---',
+      'tgt: src/auth.ts',
+      'dep: [[database]]',
+      '---',
+    ].join('\n');
+    mockReadFile.mockResolvedValueOnce(note as unknown as string);
+
+    const result = await readExistingConcepts('/vault/src/auth.ts.md');
+    expect(result).toEqual([]);
+  });
+
+  it('handles quoted form concepts: ["Auth", "Checkout"]', async () => {
+    const note = [
+      '---',
+      'tgt: src/auth.ts',
+      'concepts: ["Auth", "Checkout"]',
+      '---',
+    ].join('\n');
+    mockReadFile.mockResolvedValueOnce(note as unknown as string);
+
+    const result = await readExistingConcepts('/vault/src/auth.ts.md');
+    expect(result).toEqual(['Auth', 'Checkout']);
+  });
+
+  it('returns [] when the file does not exist', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    mockReadFile.mockRejectedValueOnce(enoent);
+
+    const result = await readExistingConcepts('/vault/missing.md');
+    expect(result).toEqual([]);
+  });
+
+  it('returns [] for an empty concepts array', async () => {
+    const note = ['---', 'concepts: []', '---'].join('\n');
+    mockReadFile.mockResolvedValueOnce(note as unknown as string);
+
+    const result = await readExistingConcepts('/vault/x.md');
+    expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runInit — concepts merge (end-to-end)
+// ---------------------------------------------------------------------------
+
+describe('runInit — concepts merge', () => {
+  it('preserves existing concepts when regenerating a vault note', async () => {
+    mockReaddir.mockResolvedValueOnce([makeDirent('auth.ts', false)]);
+    // Force the re-parse path: source is newer than note
+    mockStatForSkip(3000, 1000);
+    mockParseFile.mockResolvedValue(FIXED_PARSE_RESULT);
+    // readFile called by readExistingConcepts — returns a note with concepts
+    const existingNote = [
+      '---',
+      'tgt: src/auth.ts',
+      'concepts: [Auth]',
+      '---',
+    ].join('\n');
+    mockReadFile.mockResolvedValueOnce(existingNote as unknown as string);
+    mockFormatVaultNote.mockReturnValue('---\ntgt: test\nconcepts: [Auth]\n---');
+
+    await runInit('/project', '/project/_optivault');
+
+    // formatVaultNote must have received a ParseResult with concepts: ['Auth']
+    const lastCall = mockFormatVaultNote.mock.calls[mockFormatVaultNote.mock.calls.length - 1];
+    const passedParsed = lastCall[0] as ParseResult;
+    expect(passedParsed.concepts).toEqual(['Auth']);
+  });
+
+  it('creates the concepts/ directory scaffolding', async () => {
+    mockReaddir.mockResolvedValueOnce([]);
+
+    await runInit('/project', '/project/_optivault');
+
+    // mkdir called at least twice: vault dir + concepts dir
+    const mkdirPaths = mockMkdir.mock.calls.map((c) => (c[0] as string).replace(/\\/g, '/'));
+    expect(mkdirPaths.some((p) => p.endsWith('_optivault/concepts'))).toBe(true);
+  });
+});
 
 describe('VaultRegistry', () => {
   it('stores and retrieves ParseResults', () => {

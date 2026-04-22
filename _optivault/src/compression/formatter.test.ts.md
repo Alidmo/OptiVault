@@ -1,6 +1,6 @@
 ---
-tgt: D:\Ali\VS Code Projects\OptiVault\src\compression\formatter.test.ts
-dep: [[vitest]], [[formatter]], [[parser]]
+tgt: D:\VS Code Projects\OptiVault\src\compression\formatter.test.ts
+dep: [[formatter]], [[parser]]
 ---
 ## Inputs
-Imports:: [[vitest]], [[formatter]], [[parser]]
+Imports:: [[formatter]], [[parser]]

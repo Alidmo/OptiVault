@@ -16,6 +16,7 @@ export interface ParseResult {
   filePath: string;
   purpose?: string;      // Module-level purpose extracted from docstring or leading comment
   isEntryPoint?: true;   // Present (true) when the file is a program entry point
+  concepts?: string[];   // Carried over from the pre-existing vault note (never populated by parsers)
 }
 
 // ---------------------------------------------------------------------------

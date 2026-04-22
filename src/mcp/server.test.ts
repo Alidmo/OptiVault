@@ -180,7 +180,9 @@ describe('sync_file_context', () => {
   it('parses the file, writes vault note, patches RepoMap, and returns success', async () => {
     vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
     vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
-    // readFile is called for _RepoMap.md — return a minimal existing map
+    // First readFile: existing vault note (for concepts merge) — absent
+    mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    // Second readFile: _RepoMap.md — return a minimal existing map
     mockReadFile.mockResolvedValueOnce('# RepoMap\n\n- [[src/other]] — exports: foo\n');
 
     await startMcpServer(VAULT_DIR, SOURCE_DIR);
@@ -213,6 +215,8 @@ describe('sync_file_context', () => {
   it('inserts a new entry when the file is not yet in the RepoMap', async () => {
     vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
     vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
+    // First readFile: existing vault note (for concepts merge) — absent
+    mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     // RepoMap that does NOT yet contain src/auth
     mockReadFile.mockResolvedValueOnce('# RepoMap\n\n- [[src/other]] — exports: foo\n');
 
@@ -230,6 +234,8 @@ describe('sync_file_context', () => {
   it('replaces an existing entry in the RepoMap', async () => {
     vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
     vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
+    // First readFile: existing vault note (for concepts merge) — absent
+    mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     // RepoMap already has a stale src/auth entry
     mockReadFile.mockResolvedValueOnce(
       '# RepoMap\n\n- [[src/auth]] — exports: oldSignature\n'
@@ -243,6 +249,36 @@ describe('sync_file_context', () => {
     // Stale signature replaced
     expect(repoMapContent).not.toContain('oldSignature');
     expect(repoMapContent).toContain('[[src/auth]]');
+  });
+
+  it('preserves existing concepts: [Auth] when re-syncing', async () => {
+    vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
+    vi.mocked(formatVaultNote).mockImplementationOnce(
+      (p: ParseResult) => `---\ntgt: x\nconcepts: [${(p.concepts ?? []).join(', ')}]\n---`
+    );
+    // First readFile: existing vault note with concepts
+    const existingNote = [
+      '---',
+      'tgt: src/auth.ts',
+      'concepts: [Auth]',
+      '---',
+    ].join('\n');
+    mockReadFile.mockResolvedValueOnce(existingNote);
+    // Second readFile: RepoMap
+    mockReadFile.mockResolvedValueOnce('# RepoMap\n');
+
+    await startMcpServer(VAULT_DIR, SOURCE_DIR);
+    const handler = capturedTools['sync_file_context'];
+    await handler({ filename: FILENAME });
+
+    // formatVaultNote received parsed with concepts: ['Auth']
+    const call = vi.mocked(formatVaultNote).mock.calls[0];
+    const passed = call[0] as ParseResult;
+    expect(passed.concepts).toEqual(['Auth']);
+
+    // Vault note written with concepts preserved
+    const [, noteContent] = mockWriteFile.mock.calls[0] as [string, string, string];
+    expect(noteContent).toContain('concepts: [Auth]');
   });
 
   it('returns ENOENT error when the source file does not exist', async () => {

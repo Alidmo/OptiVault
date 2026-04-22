@@ -135,6 +135,50 @@ export async function writeRepoMap(
 }
 
 // ---------------------------------------------------------------------------
+// readExistingConcepts — parse `concepts: [A, B]` from a vault note's frontmatter
+// ---------------------------------------------------------------------------
+
+/**
+ * Read an existing vault note and return the `concepts:` array from its YAML
+ * frontmatter. Returns `[]` if the file is missing, has no frontmatter, or no
+ * concepts line. Accepts both bare (`[Auth, Checkout]`) and quoted
+ * (`["Auth", "Checkout"]`) forms.
+ */
+export async function readExistingConcepts(notePath: string): Promise<string[]> {
+  let raw: string | undefined;
+  try {
+    const result = await readFile(notePath, 'utf8');
+    raw = typeof result === 'string' ? result : undefined;
+  } catch {
+    return [];
+  }
+  if (!raw) return [];
+
+  const lines = raw.split('\n');
+  let inFrontmatter = false;
+
+  for (const line of lines) {
+    if (line.trim() === '---') {
+      if (!inFrontmatter) { inFrontmatter = true; continue; }
+      else break; // closing frontmatter
+    }
+    if (!inFrontmatter) continue;
+
+    const m = line.match(/^concepts:\s*\[([^\]]*)\]\s*$/);
+    if (m) {
+      const inner = m[1].trim();
+      if (!inner) return [];
+      return inner
+        .split(',')
+        .map((s) => s.trim().replace(/^["']|["']$/g, '').trim())
+        .filter((s) => s.length > 0);
+    }
+  }
+
+  return [];
+}
+
+// ---------------------------------------------------------------------------
 // readVaultNote — reconstruct a ParseResult from an existing vault note
 // ---------------------------------------------------------------------------
 
@@ -152,6 +196,7 @@ async function readVaultNote(notePath: string, fallbackFilePath: string): Promis
   let filePath = fallbackFilePath;
   const deps: string[] = [];
   const exports: string[] = [];
+  const concepts: string[] = [];
 
   let inFrontmatter = false;
   let frontmatterClosed = false;
@@ -169,6 +214,17 @@ async function readVaultNote(notePath: string, fallbackFilePath: string): Promis
         } else if (line.startsWith('dep:')) {
           for (const m of line.slice(4).matchAll(/\[\[([^\]]+)\]\]/g)) {
             deps.push(m[1]);
+          }
+        } else {
+          const cm = line.match(/^concepts:\s*\[([^\]]*)\]\s*$/);
+          if (cm) {
+            const inner = cm[1].trim();
+            if (inner) {
+              for (const s of inner.split(',')) {
+                const cleaned = s.trim().replace(/^["']|["']$/g, '').trim();
+                if (cleaned) concepts.push(cleaned);
+              }
+            }
           }
         }
       }
@@ -193,7 +249,12 @@ async function readVaultNote(notePath: string, fallbackFilePath: string): Promis
     }
   }
 
-  return { filePath, deps, exports };
+  return {
+    filePath,
+    deps,
+    exports,
+    ...(concepts.length > 0 ? { concepts } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -216,10 +277,29 @@ export async function generateClaudeMd(dir: string, vaultDir: string): Promise<v
 This repository uses OptiVault for AST-compressed context.
 Shadow vault: \`${vaultDir}/\`
 
+## Senior Agent Navigation Protocol
+
+Exploration is done through the dependency graph, not the filesystem. Six MCP tools are available: \`read_repo_map\`, \`query_graph\`, \`read_file_skeleton\`, \`read_function_code\`, \`read_tests_for_file\`, \`sync_file_context\`.
+
+### Banned Behaviors
+- Using \`cat\`, \`grep\`, \`head\`, \`tail\`, or the Claude Code \`Read\` tool as the first step of exploration.
+- Opening a file to "see what's in it" before querying the graph.
+- Guessing at dependencies, call sites, or architecture instead of querying.
+- Any full-file read when a skeleton or graph query would answer the same question.
+
+### Mandatory Navigation Loop
+1. **\`read_repo_map\`** — call once per session if you do not yet have a top-level picture. Skip on subsequent turns.
+2. **\`query_graph\`** — *primary wayfinding*. Ask "what does X depend on?" or "what calls into X?" with \`relation: dependencies | callers\` and \`depth: 1–3\`. Use this BEFORE touching any file.
+3. **\`read_file_skeleton\`** — once \`query_graph\` has narrowed the target set, confirm exported signatures and deps for the specific file.
+4. **\`read_function_code\`** — surgical. One function at a time. Only when you already know the exact function name.
+5. **\`read_tests_for_file\`** — before writing a change, to understand the contract you must not break.
+6. **Write** the surgical edit.
+7. **\`sync_file_context\`** — MANDATORY immediately after every write, to keep the AST graph current.
+
 ## Core Behavioral Principles (Karpathy Protocol)
 
 ### 1. Think Before Coding
-Read the shadow context first. Use \`read_repo_map\` → \`read_file_skeleton\` → \`read_function_code\` before touching anything. Never form an opinion about the codebase until you have read the relevant skeletons.
+Read the shadow context first. Query the graph, then read skeletons, then read function bodies. Never form an opinion about the codebase until you have traversed it.
 
 ### 2. Simplicity First
 Write the minimum code that satisfies the requirement. No premature abstractions, no speculative features. If a helper is not used in two places, it should not exist.
@@ -230,28 +310,16 @@ Target the exact function or module that needs to change. Never rewrite a 500-li
 ### 4. Goal-Driven Execution
 Every change must be verifiable. Before writing code, state the goal and the test that will confirm success. After writing, run the tests. If the tests do not pass, do not move on.
 
-## OptiVault MCP Tool Protocol
+## Concepts Frontmatter
 
-**Rules for AI Assistants:**
-1. NEVER use \`cat\`, \`grep\`, or standard file reads to understand the codebase initially.
-2. ALWAYS start by calling the \`read_repo_map\` MCP tool.
-3. Use \`read_file_skeleton\` to view a file's dependencies and exported signatures.
-4. Use \`read_function_code\` if you need to analyze or modify a specific function body.
-5. **CRITICAL:** Whenever you modify a file or write new code, you MUST immediately call the \`sync_file_context\` MCP tool on that file to keep the shadow vault up to date.
-
-## Verification Loop (3-Step Mandate)
-
-For every code change, follow this mandatory loop:
-1. **Read** — Use \`read_function_code\` to surgically read only the target function(s).
-2. **Write + Verify** — Make the surgical change. Write or update the corresponding test. Run the test suite.
-3. **Sync** — Call \`sync_file_context\` immediately after the write to keep the AST graph current.
-
-**PENALTY:** Explicitly penalised for reading or rewriting entire files (1000+ lines) when a surgical function read was possible. Use \`read_function_code\`, not \`cat\`.
+Vault notes may be manually annotated with a \`concepts: [Auth, Checkout, ...]\` list in their YAML frontmatter. OptiVault preserves these annotations across re-syncs (both \`init\` and \`sync_file_context\`), so collaborators can tag files with domain concepts without those tags being overwritten when the AST is re-indexed.
 
 ## Output Compression (Caveman Protocol)
 - Respond with minimum tokens. No filler. State facts only.
 - Do not explain what you are about to do. Do it.
-- After a change, confirm: file changed, tests status, sync done. Nothing else.`;
+- After a change, confirm: file changed, tests status, sync done. Nothing else.
+
+**PENALTY:** Explicitly penalised for using \`cat\`, full-file \`Read\`, or \`grep\` for exploration when \`query_graph\` or \`read_file_skeleton\` would answer the same question. Use the graph, not brute force.`;
 
   let existing: string | null = null;
   try {
@@ -326,6 +394,8 @@ export async function migrateLegacyVault(
 export async function runInit(dir: string, outputDir: string): Promise<void> {
   // Ensure output directory exists
   await mkdir(outputDir, { recursive: true });
+  // Scaffold the concepts/ dir for future self-learning (empty is fine)
+  await mkdir(join(outputDir, 'concepts'), { recursive: true });
 
   const vaultDirName = basename(outputDir);
   const files = await walkDir(dir, new Set([vaultDirName]));
@@ -363,7 +433,13 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
     let parsed: ParseResult;
     let content: string;
     try {
-      ({ parsed, content } = await processFile(filePath));
+      parsed = await parseFile(filePath);
+      // Merge forward any pre-existing concepts from the vault note
+      const existingConcepts = await readExistingConcepts(notePath);
+      if (existingConcepts.length > 0) {
+        parsed.concepts = existingConcepts;
+      }
+      content = formatVaultNote(parsed);
     } catch (err) {
       console.warn(`[optivault] Warning: skipping ${rel} — ${(err as Error).message}`);
       continue;

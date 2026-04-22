@@ -1,6 +1,6 @@
 ---
-tgt: D:\Ali\VS Code Projects\OptiVault\src\mcp\server.test.ts
-dep: [[vitest]], [[server]], [[parser]], [[formatter]]
+tgt: D:\VS Code Projects\OptiVault\src\mcp\server.test.ts
+dep: [[server]], [[parser]], [[formatter]]
 ---
 ## Inputs
-Imports:: [[vitest]], [[server]], [[parser]], [[formatter]]
+Imports:: [[server]], [[parser]], [[formatter]]
