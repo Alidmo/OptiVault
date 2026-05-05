@@ -29,6 +29,8 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.go',
   // Rust
   '.rs',
+  // Swift
+  '.swift',
 ]);
 
 /**
@@ -36,6 +38,12 @@ const SUPPORTED_EXTENSIONS = new Set([
  * The active vault directory is added dynamically at call time.
  */
 const BASE_SKIP_DIRS = new Set(IGNORED_DIRECTORIES);
+
+// Absolute self-exclusions: applied BEFORE any user-configured ignore file.
+// The AST parser must never traverse into the shadow vault or parse the
+// repo map, regardless of what custom ignore rules say.
+const ABSOLUTE_SKIP_DIRS = new Set(['_optivault']);
+const ABSOLUTE_SKIP_FILES = new Set(['_RepoMap.md']);
 
 /** Sentinel embedded in CLAUDE.md to detect an already-patched file. */
 const CLAUDE_MD_MARKER = '<!-- optivault-protocol -->';
@@ -58,6 +66,8 @@ export async function walkDir(
   const entries = await readdir(dir, { withFileTypes: true });
 
   for (const entry of entries) {
+    if (entry.isDirectory() && ABSOLUTE_SKIP_DIRS.has(entry.name)) continue;
+    if (entry.isFile() && ABSOLUTE_SKIP_FILES.has(entry.name)) continue;
     if (BASE_SKIP_DIRS.has(entry.name) || extraSkipDirs.has(entry.name)) continue;
 
     const fullPath = join(dir, entry.name);
@@ -289,7 +299,7 @@ Exploration is done through the dependency graph, not the filesystem. Six MCP to
 
 ### Mandatory Navigation Loop
 1. **\`read_repo_map\`** — call once per session if you do not yet have a top-level picture. Skip on subsequent turns.
-2. **\`query_graph\`** — *primary wayfinding*. Ask "what does X depend on?" or "what calls into X?" with \`relation: dependencies | callers\` and \`depth: 1–3\`. Use this BEFORE touching any file.
+2. **\`query_graph\`** — *primary wayfinding*. Ask "what does X depend on?" or "what calls into X?" with \`relation: dependencies | callers\` and \`depth: 1–3\`. Use this BEFORE touching any file. If you are asked to update database schemas in a Symfony app, use query_graph({ role: 'Symfony:Entity' }) to locate the domain models immediately.
 3. **\`read_file_skeleton\`** — once \`query_graph\` has narrowed the target set, confirm exported signatures and deps for the specific file.
 4. **\`read_function_code\`** — surgical. One function at a time. Only when you already know the exact function name.
 5. **\`read_tests_for_file\`** — before writing a change, to understand the contract you must not break.

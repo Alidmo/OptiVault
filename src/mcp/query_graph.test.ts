@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDepGraph, traverseGraph, normalizeGraphKey } from './server.js';
+import { buildDepGraph, traverseGraph, normalizeGraphKey, extractRolesFromNote } from './server.js';
 
 const SAMPLE_MAP = `# RepoMap
 
@@ -78,6 +78,28 @@ describe('traverseGraph — edge cases', () => {
     const { forward } = buildDepGraph(cyclic);
     const results = traverseGraph(forward, 'a', 5);
     expect(results).toEqual([{ file: 'b', depth: 1 }]);
+  });
+});
+
+describe('extractRolesFromNote', () => {
+  it('parses bare roles array from frontmatter', () => {
+    const note = ['---', 'tgt: x', 'roles: ["Symfony:Entity"]', '---'].join('\n');
+    expect(extractRolesFromNote(note)).toEqual(['Symfony:Entity']);
+  });
+
+  it('parses multiple roles', () => {
+    const note = ['---', 'roles: ["Symfony:Controller", "Symfony:Security"]', '---'].join('\n');
+    expect(extractRolesFromNote(note)).toEqual(['Symfony:Controller', 'Symfony:Security']);
+  });
+
+  it('returns [] when no roles line', () => {
+    const note = ['---', 'tgt: x', '---'].join('\n');
+    expect(extractRolesFromNote(note)).toEqual([]);
+  });
+
+  it('returns [] for empty array', () => {
+    const note = ['---', 'roles: []', '---'].join('\n');
+    expect(extractRolesFromNote(note)).toEqual([]);
   });
 });
 

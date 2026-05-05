@@ -32,6 +32,11 @@ export function formatVaultNote(parsed: ParseResult, notes?: string): string {
     lines.push(`concepts: [${parsed.concepts.join(', ')}]`);
   }
 
+  // Framework roles — detected by FrameworkHeuristics (e.g. Symfony:Entity)
+  if (parsed.roles && parsed.roles.length > 0) {
+    lines.push(`roles: [${parsed.roles.map((r) => `"${r}"`).join(', ')}]`);
+  }
+
   lines.push('---');
 
   // Purpose — displayed as a blockquote so it reads first in both Obsidian and LLM context

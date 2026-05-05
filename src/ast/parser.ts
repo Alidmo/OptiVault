@@ -3,6 +3,7 @@
 
 import { readFile } from 'fs/promises';
 import { extractDeps, extractExports, extractModulePurpose, detectEntryPoint, DependencyExtractor, ExportExtractor } from './extractor.js';
+import { detectFrameworkRoles } from './framework-heuristics.js';
 
 export { DependencyExtractor, ExportExtractor };
 
@@ -17,6 +18,7 @@ export interface ParseResult {
   purpose?: string;      // Module-level purpose extracted from docstring or leading comment
   isEntryPoint?: true;   // Present (true) when the file is a program entry point
   concepts?: string[];   // Carried over from the pre-existing vault note (never populated by parsers)
+  roles?: string[];      // Framework roles (e.g. "Symfony:Entity") detected by heuristics
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
 
   const purpose = extractModulePurpose(source, ext);
   const entryPoint = detectEntryPoint(source, filePath, ext);
+  const roles = detectFrameworkRoles(source, filePath);
 
   return {
     deps: extractDeps(source, ext),
@@ -64,5 +67,6 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
     filePath,
     ...(purpose ? { purpose } : {}),
     ...(entryPoint ? { isEntryPoint: true as const } : {}),
+    ...(roles.length > 0 ? { roles } : {}),
   };
 }

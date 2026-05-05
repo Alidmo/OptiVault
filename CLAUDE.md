@@ -25,6 +25,7 @@ Every change must be verifiable. Before writing code, state the goal and the tes
 3. Use `read_file_skeleton` to view a file's dependencies and exported signatures.
 4. Use `read_function_code` if you need to analyze or modify a specific function body.
 5. **CRITICAL:** Whenever you modify a file or write new code, you MUST immediately call the `sync_file_context` MCP tool on that file to keep the shadow vault up to date.
+6. If you are asked to update database schemas in a Symfony app, use query_graph({ role: 'Symfony:Entity' }) to locate the domain models immediately.
 
 ## Verification Loop (3-Step Mandate)
 

@@ -45,6 +45,7 @@ function normalizeInput(input: string): string {
     go: '.go',
     golang: '.go',
     rust: '.rs',
+    swift: '.swift',
   };
 
   return nameToExt[input] ?? input;

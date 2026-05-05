@@ -959,3 +959,73 @@ describe('ExportExtractor — Rust', () => {
     expect(exps.extract(src, 'rust')).not.toContain('internal_helper');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Swift — DependencyExtractor & ExportExtractor
+// ---------------------------------------------------------------------------
+
+describe('DependencyExtractor — Swift', () => {
+  it('excludes Apple system frameworks', () => {
+    const src = `import Foundation\nimport SwiftUI\nimport UIKit`;
+    const result = deps.extract(src, 'swift');
+    expect(result).not.toContain('Foundation');
+    expect(result).not.toContain('SwiftUI');
+    expect(result).not.toContain('UIKit');
+  });
+
+  it('includes project-internal imports', () => {
+    const src = `import Foundation\nimport MyAppCore\nimport AuthModule`;
+    const result = deps.extract(src, 'swift');
+    expect(result).toContain('MyAppCore');
+    expect(result).toContain('AuthModule');
+    expect(result).not.toContain('Foundation');
+  });
+});
+
+describe('ExportExtractor — Swift', () => {
+  it('extracts struct, class, protocol, enum without reading function bodies', () => {
+    const src = [
+      `import Foundation`,
+      `import SwiftUI`,
+      ``,
+      `struct UserModel {`,
+      `    let id: Int`,
+      `}`,
+      ``,
+      `final class HomeViewController: UIViewController {`,
+      `    override func viewDidLoad() {`,
+      `        super.viewDidLoad()`,
+      `        let secret = "should-not-appear"`,
+      `    }`,
+      ``,
+      `    public func reload(animated: Bool) {`,
+      `        let inner = "ignore"`,
+      `    }`,
+      `}`,
+      ``,
+      `protocol Reloadable {}`,
+      `enum Status { case idle, loading }`,
+    ].join('\n');
+
+    const exports = exps.extract(src, 'swift');
+    expect(exports).toContain('UserModel');
+    expect(exports).toContain('HomeViewController');
+    expect(exports).toContain('Reloadable');
+    expect(exports).toContain('Status');
+    expect(exports).toContain('reload(animated: Bool)');
+    // Function bodies must not leak into exports
+    for (const e of exports) {
+      expect(e).not.toContain('secret');
+      expect(e).not.toContain('super.viewDidLoad');
+      expect(e).not.toContain('inner');
+    }
+
+    const dependencies = deps.extract(src, 'swift');
+    expect(dependencies).toEqual([]);
+  });
+
+  it('extracts public func at top level', () => {
+    const src = `public func greet(name: String) -> String { return name }`;
+    expect(exps.extract(src, 'swift')).toContain('greet(name: String)');
+  });
+});

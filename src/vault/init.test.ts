@@ -180,6 +180,21 @@ describe('walkDir', () => {
     expect(mockReaddir).toHaveBeenCalledTimes(2);
   });
 
+  it('absolutely excludes _optivault/ and _RepoMap.md regardless of extraSkipDirs', async () => {
+    mockReaddir.mockResolvedValueOnce([
+      makeDirent('src', true),
+      makeDirent('_optivault', true),
+      makeDirent('_RepoMap.md', false),
+    ]).mockResolvedValueOnce([
+      makeDirent('auth.ts', false),
+    ]);
+
+    const files = await walkDir('/project');
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain('auth.ts');
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
+  });
+
   it('skips __pycache__ directories', async () => {
     mockReaddir.mockResolvedValueOnce([
       makeDirent('src', true),
