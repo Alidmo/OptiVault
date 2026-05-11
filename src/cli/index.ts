@@ -54,7 +54,7 @@ program
     const cwd = process.cwd();
     const config = getConfig(cwd);
     const vaultDir = resolve(options.vault ?? config.vaultDir);
-    const sourceDir = options.source ? resolve(options.source) : undefined;
+    const sourceDir = resolve(options.source ?? cwd);
 
     await migrateLegacyVault(cwd, vaultDir);
     await startMcpServer(vaultDir, sourceDir);

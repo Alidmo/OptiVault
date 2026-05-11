@@ -10,8 +10,8 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join, dirname, extname } from 'path';
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { join, dirname, extname, relative } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { extractFunctionCode } from '../ast/function-extractor.js';
@@ -130,7 +130,7 @@ export interface DepGraph {
 export function normalizeGraphKey(key: string): string {
   let k = key.replace(/\\/g, '/').trim();
   // Strip known source extensions
-  k = k.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|php|cpp|cc|h|hpp|cs)$/i, '');
+  k = k.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|php|cpp|cc|h|hpp|cs|swift)$/i, '');
   return k;
 }
 
@@ -199,6 +199,72 @@ export function traverseGraph(
   }
 
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// extractRolesFromNote — parse the `roles:` array from a vault note's YAML
+// ---------------------------------------------------------------------------
+
+export function extractRolesFromNote(noteContent: string): string[] {
+  const lines = noteContent.split('\n');
+  let inFrontmatter = false;
+  for (const line of lines) {
+    if (line.trim() === '---') {
+      if (!inFrontmatter) { inFrontmatter = true; continue; }
+      else break;
+    }
+    if (!inFrontmatter) continue;
+    const m = line.match(/^roles:\s*\[([^\]]*)\]\s*$/);
+    if (m) {
+      const inner = m[1].trim();
+      if (!inner) return [];
+      return inner
+        .split(',')
+        .map((s) => s.trim().replace(/^["']|["']$/g, '').trim())
+        .filter((s) => s.length > 0);
+    }
+  }
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// loadRolesIndex — scan vault dir, build map of normalized-key → roles[]
+// ---------------------------------------------------------------------------
+
+export async function loadRolesIndex(vaultDir: string): Promise<Map<string, string[]>> {
+  const index = new Map<string, string[]>();
+
+  async function walk(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== '_RepoMap.md') {
+        let content: string;
+        try {
+          content = await readFile(full, 'utf-8');
+        } catch {
+          continue;
+        }
+        const roles = extractRolesFromNote(content);
+        if (roles.length === 0) continue;
+        // Derive key: relative path from vaultDir, strip trailing .md, then strip src ext
+        const rel = relative(vaultDir, full).replace(/\\/g, '/');
+        const noMd = rel.replace(/\.md$/, '');
+        const key = normalizeGraphKey(noMd);
+        index.set(key, roles);
+      }
+    }
+  }
+
+  await walk(vaultDir);
+  return index;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +523,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
 
   server.tool(
     'query_graph',
-    "PRIMARY wayfinding tool. Use this to answer 'what depends on X' or 'what calls X' instead of opening files. Returns a traversal of the AST dependency graph — no file bodies, no guessing.",
+    "PRIMARY wayfinding tool. Use this to answer 'what depends on X', 'what calls X', or 'which files have a given framework role' (e.g. role: 'Symfony:Entity' for ORM models). Returns a traversal of the AST dependency graph — no file bodies, no guessing.",
     {
       from: z.string().describe('Source file path, e.g. src/auth.ts'),
       relation: z
@@ -469,8 +535,14 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         .min(1)
         .max(5)
         .describe('Traversal depth (1 = direct only). Capped at 5.'),
+      role: z
+        .string()
+        .optional()
+        .describe(
+          'Optional framework-role filter (e.g. "Symfony:Entity", "Symfony:Controller"). When set, only nodes whose vault-note YAML `roles:` array contains this value are returned.'
+        ),
     },
-    async ({ from, relation, depth }) => {
+    async ({ from, relation, depth, role }) => {
       const cappedDepth = Math.min(Math.max(1, depth), 5);
       const repoMapPath = `${vaultDir}/_RepoMap.md`;
 
@@ -519,13 +591,18 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         };
       }
 
-      const results = traverseGraph(adjacency, normalizedFrom, cappedDepth);
+      let results = traverseGraph(adjacency, normalizedFrom, cappedDepth);
+
+      if (role) {
+        const rolesIndex = await loadRolesIndex(vaultDir);
+        results = results.filter((r) => (rolesIndex.get(r.file) ?? []).includes(role));
+      }
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({ from, relation, depth: cappedDepth, results }),
+            text: JSON.stringify({ from, relation, depth: cappedDepth, ...(role ? { role } : {}), results }),
           },
         ],
       };

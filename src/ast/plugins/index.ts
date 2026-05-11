@@ -15,6 +15,7 @@ import { cppPlugin } from './cpp.js';
 import { csharpPlugin } from './csharp.js';
 import { goPlugin } from './go.js';
 import { rustPlugin } from './rust.js';
+import { swiftPlugin } from './swift.js';
 
 // Auto-register built-in plugins
 registerPlugin(typescriptPlugin);
@@ -26,10 +27,11 @@ registerPlugin(cppPlugin);
 registerPlugin(csharpPlugin);
 registerPlugin(goPlugin);
 registerPlugin(rustPlugin);
+registerPlugin(swiftPlugin);
 
 // Export the plugins for reference
 export {
   typescriptPlugin, pythonPlugin,
   javaPlugin, kotlinPlugin, phpPlugin,
-  cppPlugin, csharpPlugin, goPlugin, rustPlugin,
+  cppPlugin, csharpPlugin, goPlugin, rustPlugin, swiftPlugin,
 };
