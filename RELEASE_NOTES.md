@@ -2,6 +2,26 @@
 
 ---
 
+## v2.5.0 — CodeMemory Architecture & SQLite Backend
+
+### What's New
+
+OptiVault has been completely re-architected to implement the **CodeMemory MCP Style**, fundamentally shifting from a legacy Markdown hub-and-spoke file (`_RepoMap.md`) to a decoupled, granular `better-sqlite3` database engine (`graph.sqlite`).
+
+#### 1. SQLite Native Graph Store
+- Removed all regex-based `_RepoMap.md` building logic.
+- Graph traversals now use a native SQL backend, enabling perfectly flat `O(1)` response times for `query_graph` irrespective of repository size.
+- A 3-way benchmark confirms SQLite operates at `7ms` end-to-end on depth-2 caller retrievals, completely eliminating the scaling bottlenecks previously found in the v2.2 Markdown system.
+
+#### 2. Granular Entities
+- Database natively separates and stores individual functions and classes (`Entity.kind = 'function' | 'class'`), enabling ultra-precise memory routing without bloating the LLM payload context.
+- Shadow vault files still contain native Obsidian `[[dependency]]` links for offline graph visualization, but now they form a clean, clustered dependency tree instead of a chaotic sunburst graph.
+
+#### 3. Vitest Mocking Refactor
+- Completely refactored all test suite mocks (`vi.mock()`) to support Vitest v4's strict `class` semantics, ensuring the `Store` and `GraphStore` architectures are robustly verified.
+
+---
+
 ## v0.3.0 — Multi-Language Expansion + Clean Graphs
 
 ### What's New

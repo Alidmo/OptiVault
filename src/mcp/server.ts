@@ -10,67 +10,16 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
-import { join, dirname, extname, relative } from 'path';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { join, dirname, extname } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { extractFunctionCode } from '../ast/function-extractor.js';
 import { formatVaultNote } from '../compression/formatter.js';
-import { readExistingConcepts } from '../vault/init.js';
+import { readExistingConcepts, persistToGraph } from '../vault/init.js';
+import { openGraphStore } from '../store/sqlite.js';
+import { normalizeGraphKey } from '../store/keys.js';
 import { z } from 'zod';
-
-// ---------------------------------------------------------------------------
-// patchRepoMapEntry — targeted single-line update in _RepoMap.md
-// ---------------------------------------------------------------------------
-
-/**
- * Replace or insert the _RepoMap.md entry for a single file.
- * Reads the existing map, patches the relevant line in-place, and writes it
- * back. This is O(lines in RepoMap) rather than O(all files in repo).
- */
-async function patchRepoMapEntry(
-  vaultDir: string,
-  filename: string,
-  parsed: ParseResult
-): Promise<void> {
-  const repoMapPath = join(vaultDir, '_RepoMap.md');
-
-  // Derive the wikilink key the same way writeRepoMap does
-  const rel = filename.replace(/\\/g, '/');
-  const wikiKey = rel.replace(/\.[^/.]+$/, '');
-
-  // Build the replacement line
-  const parts: string[] = [];
-  if (parsed.exports.length > 0) parts.push(`exports: ${parsed.exports.join(', ')}`);
-  if (parsed.deps.length > 0) parts.push(`deps: ${parsed.deps.join(', ')}`);
-  const newLine = parts.length > 0
-    ? `- [[${wikiKey}]] — ${parts.join(' — ')}`
-    : `- [[${wikiKey}]]`;
-
-  // Read existing map (or start fresh if it doesn't exist yet)
-  let content = '';
-  try {
-    const raw = await readFile(repoMapPath, 'utf-8');
-    content = typeof raw === 'string' ? raw : '';
-  } catch {
-    content = '# RepoMap\n';
-  }
-
-  const lines = content.split('\n');
-
-  // Escape special regex chars in the wiki key (paths may contain dots)
-  const escapedKey = wikiKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pat = new RegExp(`^- \\[\\[${escapedKey}\\]\\]`);
-  const idx = lines.findIndex((l) => pat.test(l));
-
-  if (idx !== -1) {
-    lines[idx] = newLine;   // update existing entry
-  } else {
-    lines.push(newLine);    // new file — append
-  }
-
-  await writeFile(repoMapPath, lines.join('\n'), 'utf-8');
-}
 
 // ---------------------------------------------------------------------------
 // getTestFileCandidates — derive likely test file paths from a source path
@@ -113,158 +62,36 @@ export function getTestFileCandidates(filename: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// buildDepGraph — parse _RepoMap.md into forward/reverse adjacency maps
+// renderRepoSummary — synthesize a bird's-eye view from the SQLite store
 // ---------------------------------------------------------------------------
-
-export interface DepGraph {
-  forward: Map<string, string[]>;
-  reverse: Map<string, string[]>;
-}
 
 /**
- * Normalize a file key by stripping known source extensions and the leading
- * wikilink-style path traversal prefixes (RepoMap sometimes includes
- * ../../Ali/... for absolute-style entries — preserve the tail after the
- * last "OptiVault/" if present).
+ * Build a compact markdown summary of every file node tracked in the graph
+ * store. Replaces the old `_RepoMap.md` artifact — same shape, computed on
+ * demand so it can never drift from the underlying graph.
  */
-export function normalizeGraphKey(key: string): string {
-  let k = key.replace(/\\/g, '/').trim();
-  // Strip known source extensions
-  k = k.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|php|cpp|cc|h|hpp|cs|swift)$/i, '');
-  return k;
-}
-
-export function buildDepGraph(repoMapContent: string): DepGraph {
-  const forward = new Map<string, string[]>();
-  const reverse = new Map<string, string[]>();
-
-  const lines = repoMapContent.split('\n');
-  const entryPat = /^- \[\[([^\]]+)\]\](.*)$/;
-
-  for (const line of lines) {
-    const m = entryPat.exec(line);
-    if (!m) continue;
-
-    const rawKey = m[1];
-    const rest = m[2];
-    const key = normalizeGraphKey(rawKey);
-
-    // Extract deps segment if present
-    const depsMatch = /—\s*deps:\s*([^—]+?)(?:\s*—|$)/.exec(rest);
-    const deps: string[] = [];
-    if (depsMatch) {
-      const depList = depsMatch[1].split(',').map((d) => normalizeGraphKey(d));
-      for (const d of depList) {
-        if (d) deps.push(d);
-      }
+function renderRepoSummary(vaultDir: string): string {
+  const store = openGraphStore(vaultDir);
+  try {
+    const files = store.allFiles();
+    if (files.length === 0) {
+      return '# RepoMap\n\n(graph is empty — run `optivault init` first)';
     }
 
-    forward.set(key, deps);
-    for (const d of deps) {
-      const arr = reverse.get(d) ?? [];
-      arr.push(key);
-      reverse.set(d, arr);
+    const lines: string[] = ['# RepoMap', ''];
+    for (const node of files) {
+      const deps = store.neighbors(node.id, 'out', ['DEPENDS_ON']).map((n) => n.id);
+      const parts: string[] = [];
+      if (node.roles.length > 0) parts.push(`roles: ${node.roles.join(', ')}`);
+      if (deps.length > 0) parts.push(`deps: ${deps.join(', ')}`);
+      lines.push(
+        parts.length > 0 ? `- [[${node.id}]] — ${parts.join(' — ')}` : `- [[${node.id}]]`
+      );
     }
+    return lines.join('\n');
+  } finally {
+    store.close();
   }
-
-  return { forward, reverse };
-}
-
-/**
- * BFS traversal up to `depth`. Returns unique {file, depth} entries at
- * their first-discovered depth.
- */
-export function traverseGraph(
-  adjacency: Map<string, string[]>,
-  from: string,
-  depth: number
-): Array<{ file: string; depth: number }> {
-  const results: Array<{ file: string; depth: number }> = [];
-  const seen = new Set<string>([from]);
-  let frontier: string[] = [from];
-
-  for (let d = 1; d <= depth; d++) {
-    const next: string[] = [];
-    for (const node of frontier) {
-      const neighbors = adjacency.get(node) ?? [];
-      for (const nb of neighbors) {
-        if (seen.has(nb)) continue;
-        seen.add(nb);
-        results.push({ file: nb, depth: d });
-        next.push(nb);
-      }
-    }
-    if (next.length === 0) break;
-    frontier = next;
-  }
-
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// extractRolesFromNote — parse the `roles:` array from a vault note's YAML
-// ---------------------------------------------------------------------------
-
-export function extractRolesFromNote(noteContent: string): string[] {
-  const lines = noteContent.split('\n');
-  let inFrontmatter = false;
-  for (const line of lines) {
-    if (line.trim() === '---') {
-      if (!inFrontmatter) { inFrontmatter = true; continue; }
-      else break;
-    }
-    if (!inFrontmatter) continue;
-    const m = line.match(/^roles:\s*\[([^\]]*)\]\s*$/);
-    if (m) {
-      const inner = m[1].trim();
-      if (!inner) return [];
-      return inner
-        .split(',')
-        .map((s) => s.trim().replace(/^["']|["']$/g, '').trim())
-        .filter((s) => s.length > 0);
-    }
-  }
-  return [];
-}
-
-// ---------------------------------------------------------------------------
-// loadRolesIndex — scan vault dir, build map of normalized-key → roles[]
-// ---------------------------------------------------------------------------
-
-export async function loadRolesIndex(vaultDir: string): Promise<Map<string, string[]>> {
-  const index = new Map<string, string[]>();
-
-  async function walk(dir: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== '_RepoMap.md') {
-        let content: string;
-        try {
-          content = await readFile(full, 'utf-8');
-        } catch {
-          continue;
-        }
-        const roles = extractRolesFromNote(content);
-        if (roles.length === 0) continue;
-        // Derive key: relative path from vaultDir, strip trailing .md, then strip src ext
-        const rel = relative(vaultDir, full).replace(/\\/g, '/');
-        const noMd = rel.replace(/\.md$/, '');
-        const key = normalizeGraphKey(noMd);
-        index.set(key, roles);
-      }
-    }
-  }
-
-  await walk(vaultDir);
-  return index;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,18 +110,16 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
     "Bird's-eye structural map of the repo. Call this first if you've never queried the graph in this session; otherwise prefer query_graph for specific traversal questions.",
     {},
     async () => {
-      const repoMapPath = `${vaultDir}/_RepoMap.md`;
       try {
-        const content = await readFile(repoMapPath, 'utf-8');
-        return { content: [{ type: 'text', text: content }] };
+        return { content: [{ type: 'text', text: renderRepoSummary(vaultDir) }] };
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') {
+        if (code === 'ENOENT' || code === 'SQLITE_CANTOPEN') {
           return {
             content: [
               {
                 type: 'text',
-                text: 'RepoMap not found. Run "optivault init" to generate it.',
+                text: 'Graph store not found. Run "optivault init" to generate it.',
               },
             ],
           };
@@ -437,8 +262,13 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         await mkdir(dirname(notePath), { recursive: true });
         await writeFile(notePath, noteContent, 'utf-8');
 
-        // Patch just this entry in _RepoMap.md
-        await patchRepoMapEntry(vaultDir, filename, parsed);
+        // Patch the graph store entry for this file
+        const store = openGraphStore(vaultDir);
+        try {
+          persistToGraph(store, parsed, sourceDir);
+        } finally {
+          store.close();
+        }
 
         return {
           content: [
@@ -544,14 +374,14 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
     },
     async ({ from, relation, depth, role }) => {
       const cappedDepth = Math.min(Math.max(1, depth), 5);
-      const repoMapPath = `${vaultDir}/_RepoMap.md`;
+      const normalizedFrom = normalizeGraphKey(from);
 
-      let content: string;
+      let store;
       try {
-        content = await readFile(repoMapPath, 'utf-8');
+        store = openGraphStore(vaultDir);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') {
+        if (code === 'ENOENT' || code === 'SQLITE_CANTOPEN') {
           return {
             content: [
               {
@@ -561,7 +391,7 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
                   relation,
                   depth: cappedDepth,
                   results: [],
-                  message: 'RepoMap not found. Run "optivault init" to generate it.',
+                  message: 'Graph store not found. Run "optivault init" to generate it.',
                 }),
               },
             ],
@@ -570,11 +400,38 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
         throw err;
       }
 
-      const graph = buildDepGraph(content);
-      const normalizedFrom = normalizeGraphKey(from);
-      const adjacency = relation === 'dependencies' ? graph.forward : graph.reverse;
+      try {
+        if (!store.hasNode(normalizedFrom)) {
+          // Allow traversal from nodes that only appear as edge targets
+          // (e.g. external/unresolved deps), but bail out if completely unknown.
+          const outgoing = store.neighbors(normalizedFrom, 'out');
+          const incoming = store.neighbors(normalizedFrom, 'in');
+          if (outgoing.length === 0 && incoming.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    from,
+                    relation,
+                    depth: cappedDepth,
+                    results: [],
+                    message: `'${from}' not found in graph.`,
+                  }),
+                },
+              ],
+            };
+          }
+        }
 
-      if (!graph.forward.has(normalizedFrom) && !graph.reverse.has(normalizedFrom)) {
+        const direction = relation === 'dependencies' ? 'out' : 'in';
+        let results = store.traverse(normalizedFrom, direction, cappedDepth, ['DEPENDS_ON']);
+
+        if (role) {
+          const roleMatches = new Set(store.queryByRole(role).map((n) => n.id));
+          results = results.filter((r) => roleMatches.has(r.file));
+        }
+
         return {
           content: [
             {
@@ -583,29 +440,15 @@ export async function startMcpServer(vaultDir: string, sourceDir?: string): Prom
                 from,
                 relation,
                 depth: cappedDepth,
-                results: [],
-                message: `'${from}' not found in RepoMap.`,
+                ...(role ? { role } : {}),
+                results,
               }),
             },
           ],
         };
+      } finally {
+        store.close();
       }
-
-      let results = traverseGraph(adjacency, normalizedFrom, cappedDepth);
-
-      if (role) {
-        const rolesIndex = await loadRolesIndex(vaultDir);
-        results = results.filter((r) => (rolesIndex.get(r.file) ?? []).includes(role));
-      }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ from, relation, depth: cappedDepth, ...(role ? { role } : {}), results }),
-          },
-        ],
-      };
     }
   );
 

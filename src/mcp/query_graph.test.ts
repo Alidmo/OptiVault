@@ -1,116 +1,131 @@
-import { describe, it, expect } from 'vitest';
-import { buildDepGraph, traverseGraph, normalizeGraphKey, extractRolesFromNote } from './server.js';
-
-const SAMPLE_MAP = `# RepoMap
-
-- [[src/auth]] — exports: verifyToken(token: string) — deps: src/database, src/crypto
-- [[src/database]] — exports: connect() — deps: src/db/pool
-- [[src/crypto]] — exports: hash()
-- [[src/db/pool]] — exports: Pool
-- [[src/api]] — deps: src/auth
-`;
-
-describe('buildDepGraph', () => {
-  it('parses a RepoMap into forward and reverse adjacency maps', () => {
-    const { forward, reverse } = buildDepGraph(SAMPLE_MAP);
-
-    expect(forward.get('src/auth')).toEqual(['src/database', 'src/crypto']);
-    expect(forward.get('src/database')).toEqual(['src/db/pool']);
-    expect(forward.get('src/crypto')).toEqual([]);
-
-    expect(reverse.get('src/database')).toEqual(['src/auth']);
-    expect(reverse.get('src/crypto')).toEqual(['src/auth']);
-    expect(reverse.get('src/auth')).toEqual(['src/api']);
-    expect(reverse.get('src/db/pool')).toEqual(['src/database']);
-  });
-
-  it('handles entries without a deps segment', () => {
-    const { forward } = buildDepGraph('- [[src/foo]] — exports: bar()\n');
-    expect(forward.get('src/foo')).toEqual([]);
-  });
-});
-
-describe('traverseGraph — dependencies', () => {
-  it('returns direct deps only at depth 1', () => {
-    const { forward } = buildDepGraph(SAMPLE_MAP);
-    const results = traverseGraph(forward, 'src/auth', 1);
-    expect(results).toEqual([
-      { file: 'src/database', depth: 1 },
-      { file: 'src/crypto', depth: 1 },
-    ]);
-  });
-
-  it('returns 1st + 2nd degree deps at depth 2 and dedupes', () => {
-    const { forward } = buildDepGraph(SAMPLE_MAP);
-    const results = traverseGraph(forward, 'src/auth', 2);
-    expect(results).toEqual([
-      { file: 'src/database', depth: 1 },
-      { file: 'src/crypto', depth: 1 },
-      { file: 'src/db/pool', depth: 2 },
-    ]);
-  });
-});
-
-describe('traverseGraph — callers', () => {
-  it('returns reverse edges correctly', () => {
-    const { reverse } = buildDepGraph(SAMPLE_MAP);
-    const results = traverseGraph(reverse, 'src/db/pool', 2);
-    expect(results).toEqual([
-      { file: 'src/database', depth: 1 },
-      { file: 'src/auth', depth: 2 },
-    ]);
-  });
-});
-
-describe('traverseGraph — edge cases', () => {
-  it('returns empty array for unknown node', () => {
-    const { forward } = buildDepGraph(SAMPLE_MAP);
-    const results = traverseGraph(forward, 'src/does-not-exist', 3);
-    expect(results).toEqual([]);
-  });
-
-  it('does not infinite-loop on cycles', () => {
-    const cyclic = `# RepoMap
-
-- [[a]] — deps: b
-- [[b]] — deps: a
-`;
-    const { forward } = buildDepGraph(cyclic);
-    const results = traverseGraph(forward, 'a', 5);
-    expect(results).toEqual([{ file: 'b', depth: 1 }]);
-  });
-});
-
-describe('extractRolesFromNote', () => {
-  it('parses bare roles array from frontmatter', () => {
-    const note = ['---', 'tgt: x', 'roles: ["Symfony:Entity"]', '---'].join('\n');
-    expect(extractRolesFromNote(note)).toEqual(['Symfony:Entity']);
-  });
-
-  it('parses multiple roles', () => {
-    const note = ['---', 'roles: ["Symfony:Controller", "Symfony:Security"]', '---'].join('\n');
-    expect(extractRolesFromNote(note)).toEqual(['Symfony:Controller', 'Symfony:Security']);
-  });
-
-  it('returns [] when no roles line', () => {
-    const note = ['---', 'tgt: x', '---'].join('\n');
-    expect(extractRolesFromNote(note)).toEqual([]);
-  });
-
-  it('returns [] for empty array', () => {
-    const note = ['---', 'roles: []', '---'].join('\n');
-    expect(extractRolesFromNote(note)).toEqual([]);
-  });
-});
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { openGraphStore } from '../store/sqlite.js';
+import { normalizeGraphKey } from '../store/keys.js';
 
 describe('normalizeGraphKey', () => {
   it('strips source extensions', () => {
     expect(normalizeGraphKey('src/auth.ts')).toBe('src/auth');
     expect(normalizeGraphKey('src/app.py')).toBe('src/app');
     expect(normalizeGraphKey('src/mod.go')).toBe('src/mod');
+    expect(normalizeGraphKey('src/View.swift')).toBe('src/View');
   });
 
   it('leaves already-stripped keys alone', () => {
     expect(normalizeGraphKey('src/auth')).toBe('src/auth');
+  });
+
+  it('converts backslashes to forward slashes', () => {
+    expect(normalizeGraphKey('src\\foo\\bar.ts')).toBe('src/foo/bar');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SQLite-backed traversal — replaces the v2.0 RepoMap-parsing tests
+// ---------------------------------------------------------------------------
+
+describe('query_graph — SQLite-backed traversal', () => {
+  let tmp: string;
+  let store: ReturnType<typeof openGraphStore>;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'optivault-qg-'));
+    store = openGraphStore(tmp);
+
+    // Build the same graph the old RepoMap tests used:
+    //   auth -> database -> db/pool
+    //   auth -> crypto
+    //   api  -> auth
+    for (const id of ['src/auth', 'src/database', 'src/crypto', 'src/db/pool', 'src/api']) {
+      store.upsertNode({
+        id,
+        kind: 'file',
+        file: id,
+        name: null,
+        roles: [],
+        purpose: null,
+        isEntryPoint: false,
+      });
+    }
+    store.replaceOutgoingEdges('src/auth', [
+      { src: 'src/auth', dst: 'src/database', kind: 'DEPENDS_ON' },
+      { src: 'src/auth', dst: 'src/crypto', kind: 'DEPENDS_ON' },
+    ]);
+    store.replaceOutgoingEdges('src/database', [
+      { src: 'src/database', dst: 'src/db/pool', kind: 'DEPENDS_ON' },
+    ]);
+    store.replaceOutgoingEdges('src/api', [
+      { src: 'src/api', dst: 'src/auth', kind: 'DEPENDS_ON' },
+    ]);
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('returns direct dependencies at depth 1', () => {
+    const results = store.traverse('src/auth', 'out', 1, ['DEPENDS_ON']);
+    expect(results.map((r) => r.file).sort()).toEqual(['src/crypto', 'src/database']);
+  });
+
+  it('returns 1st + 2nd degree deps at depth 2 and dedupes', () => {
+    const results = store.traverse('src/auth', 'out', 2, ['DEPENDS_ON']);
+    const byDepth = results.map((r) => `${r.file}@${r.depth}`).sort();
+    expect(byDepth).toEqual([
+      'src/crypto@1',
+      'src/database@1',
+      'src/db/pool@2',
+    ]);
+  });
+
+  it('traverses incoming edges (callers direction)', () => {
+    const results = store.traverse('src/db/pool', 'in', 2, ['DEPENDS_ON']);
+    expect(results.map((r) => `${r.file}@${r.depth}`).sort()).toEqual([
+      'src/auth@2',
+      'src/database@1',
+    ]);
+  });
+
+  it('returns empty array for unknown node', () => {
+    const results = store.traverse('src/does-not-exist', 'out', 3, ['DEPENDS_ON']);
+    expect(results).toEqual([]);
+  });
+
+  it('does not infinite-loop on cycles', () => {
+    store.upsertNode({ id: 'a', kind: 'file', file: 'a', name: null, roles: [], purpose: null, isEntryPoint: false });
+    store.upsertNode({ id: 'b', kind: 'file', file: 'b', name: null, roles: [], purpose: null, isEntryPoint: false });
+    store.replaceOutgoingEdges('a', [{ src: 'a', dst: 'b', kind: 'DEPENDS_ON' }]);
+    store.replaceOutgoingEdges('b', [{ src: 'b', dst: 'a', kind: 'DEPENDS_ON' }]);
+
+    const results = store.traverse('a', 'out', 5, ['DEPENDS_ON']);
+    expect(results.map((r) => r.file)).toEqual(['b']);
+  });
+
+  it('queryByRole filters file nodes by framework role', () => {
+    store.upsertNode({
+      id: 'src/User',
+      kind: 'file',
+      file: 'src/User',
+      name: null,
+      roles: ['Symfony:Entity'],
+      purpose: null,
+      isEntryPoint: false,
+    });
+    store.upsertNode({
+      id: 'src/UserController',
+      kind: 'file',
+      file: 'src/UserController',
+      name: null,
+      roles: ['Symfony:Controller'],
+      purpose: null,
+      isEntryPoint: false,
+    });
+
+    expect(store.queryByRole('Symfony:Entity').map((n) => n.id)).toEqual(['src/User']);
+    expect(store.queryByRole('Symfony:Controller').map((n) => n.id)).toEqual(['src/UserController']);
+    expect(store.queryByRole('Symfony:Nonexistent')).toEqual([]);
   });
 });

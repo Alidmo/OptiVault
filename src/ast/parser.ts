@@ -2,10 +2,20 @@
 // Uses the plugin-based extractor to parse files in any registered language.
 
 import { readFile } from 'fs/promises';
-import { extractDeps, extractExports, extractModulePurpose, detectEntryPoint, DependencyExtractor, ExportExtractor } from './extractor.js';
+import {
+  extractDeps,
+  extractExports,
+  extractModulePurpose,
+  detectEntryPoint,
+  extractEntities,
+  DependencyExtractor,
+  ExportExtractor,
+} from './extractor.js';
 import { detectFrameworkRoles } from './framework-heuristics.js';
+import type { Entity } from './types.js';
 
 export { DependencyExtractor, ExportExtractor };
+export type { Entity };
 
 // ---------------------------------------------------------------------------
 // ParseResult
@@ -19,6 +29,7 @@ export interface ParseResult {
   isEntryPoint?: true;   // Present (true) when the file is a program entry point
   concepts?: string[];   // Carried over from the pre-existing vault note (never populated by parsers)
   roles?: string[];      // Framework roles (e.g. "Symfony:Entity") detected by heuristics
+  entities?: Entity[];   // Granular entities (functions/classes) declared in this file
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +71,7 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
   const purpose = extractModulePurpose(source, ext);
   const entryPoint = detectEntryPoint(source, filePath, ext);
   const roles = detectFrameworkRoles(source, filePath);
+  const entities = extractEntities(source, ext);
 
   return {
     deps: extractDeps(source, ext),
@@ -68,5 +80,6 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
     ...(purpose ? { purpose } : {}),
     ...(entryPoint ? { isEntryPoint: true as const } : {}),
     ...(roles.length > 0 ? { roles } : {}),
+    ...(entities.length > 0 ? { entities } : {}),
   };
 }

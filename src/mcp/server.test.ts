@@ -14,27 +14,26 @@ const { capturedTools, mockReadFile, mockWriteFile, mockMkdir } = vi.hoisted(() 
 // Mock the MCP SDK so tests never touch stdio or real network
 // ---------------------------------------------------------------------------
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => {
-  return {
-    McpServer: vi.fn().mockImplementation(() => ({
-      tool: vi.fn(
-        (
-          _name: string,
-          _descriptionOrSchema: unknown,
-          _schemaOrCb: unknown,
-          maybeCb?: (...args: unknown[]) => unknown,
-        ) => {
-          const name = _name as string;
-          const cb = maybeCb ?? (_schemaOrCb as (...args: unknown[]) => unknown);
-          capturedTools[name] = cb;
-        },
-      ),
-      connect: vi.fn().mockResolvedValue(undefined),
-    })),
-  };
+  class MockMcpServer {
+    tool = vi.fn(
+      (
+        _name: string,
+        _descriptionOrSchema: unknown,
+        _schemaOrCb: unknown,
+        maybeCb?: (...args: unknown[]) => unknown,
+      ) => {
+        const cb = maybeCb ?? (_schemaOrCb as (...args: unknown[]) => unknown);
+        capturedTools[_name] = cb;
+      },
+    );
+    connect = vi.fn().mockResolvedValue(undefined);
+  }
+  return { McpServer: MockMcpServer };
 });
 
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => {
-  return { StdioServerTransport: vi.fn().mockImplementation(() => ({})) };
+  class MockStdioServerTransport {}
+  return { StdioServerTransport: MockStdioServerTransport };
 });
 
 // ---------------------------------------------------------------------------
@@ -57,6 +56,23 @@ vi.mock('../ast/function-extractor.js', () => ({
 vi.mock('../compression/formatter.js', () => ({
   formatVaultNote: vi.fn(() => '---\ntgt: mocked\n---'),
 }));
+
+vi.mock('../store/sqlite.js', () => {
+  const mkStore = () => ({
+    upsertNode: vi.fn(),
+    upsertEdge: vi.fn(),
+    replaceOutgoingEdges: vi.fn(),
+    deleteFile: vi.fn(),
+    hasNode: vi.fn(() => true),
+    getNode: vi.fn(() => null),
+    neighbors: vi.fn(() => []),
+    traverse: vi.fn(() => []),
+    queryByRole: vi.fn(() => []),
+    allFiles: vi.fn(() => []),
+    close: vi.fn(),
+  });
+  return { openGraphStore: vi.fn(() => mkStore()) };
+});
 
 // Import under test after mocks are in place
 import { startMcpServer, getTestFileCandidates } from './server.js';
@@ -177,13 +193,11 @@ describe('sync_file_context', () => {
     expect(result.content[0].text).toContain('Source directory not configured');
   });
 
-  it('parses the file, writes vault note, patches RepoMap, and returns success', async () => {
+  it('parses the file, writes vault note, persists to graph, and returns success', async () => {
     vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
     vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
-    // First readFile: existing vault note (for concepts merge) — absent
+    // readFile for concepts-merge of existing note — absent
     mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    // Second readFile: _RepoMap.md — return a minimal existing map
-    mockReadFile.mockResolvedValueOnce('# RepoMap\n\n- [[src/other]] — exports: foo\n');
 
     await startMcpServer(VAULT_DIR, SOURCE_DIR);
     const handler = capturedTools['sync_file_context'];
@@ -198,57 +212,33 @@ describe('sync_file_context', () => {
       expect.stringContaining('auth.ts')
     );
 
-    // writeFile called twice: once for vault note, once for patched _RepoMap.md
-    expect(mockWriteFile).toHaveBeenCalledTimes(2);
-
-    // First write is the vault note (path separator is platform-dependent)
+    // writeFile called exactly once — for the vault note. The graph is
+    // persisted to SQLite, not to a markdown file.
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
     const [notePath, noteContent] = mockWriteFile.mock.calls[0] as [string, string, string];
     expect(notePath.replace(/\\/g, '/')).toContain(FILENAME + '.md');
     expect(noteContent).toContain('tgt:');
-
-    // Second write is the updated RepoMap
-    const [repoMapPath, repoMapContent] = mockWriteFile.mock.calls[1] as [string, string, string];
-    expect(repoMapPath.replace(/\\/g, '/')).toContain('_RepoMap.md');
-    expect(repoMapContent).toContain('[[src/auth]]');
   });
 
-  it('inserts a new entry when the file is not yet in the RepoMap', async () => {
+  it('opens the graph store so persistToGraph can write the file node', async () => {
     vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
     vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
-    // First readFile: existing vault note (for concepts merge) — absent
     mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    // RepoMap that does NOT yet contain src/auth
-    mockReadFile.mockResolvedValueOnce('# RepoMap\n\n- [[src/other]] — exports: foo\n');
+
+    const sqliteModule = await import('../store/sqlite.js');
+    const openSpy = vi.mocked(sqliteModule.openGraphStore);
 
     await startMcpServer(VAULT_DIR, SOURCE_DIR);
     const handler = capturedTools['sync_file_context'];
     await handler({ filename: FILENAME });
 
-    const [, repoMapContent] = mockWriteFile.mock.calls[1] as [string, string, string];
-    // New entry appended
-    expect(repoMapContent).toContain('[[src/auth]]');
-    // Original entry preserved
-    expect(repoMapContent).toContain('[[src/other]]');
-  });
-
-  it('replaces an existing entry in the RepoMap', async () => {
-    vi.mocked(parseFile).mockResolvedValueOnce(MOCK_PARSE_RESULT);
-    vi.mocked(formatVaultNote).mockReturnValueOnce('---\ntgt: /src/src/auth.ts\n---');
-    // First readFile: existing vault note (for concepts merge) — absent
-    mockReadFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    // RepoMap already has a stale src/auth entry
-    mockReadFile.mockResolvedValueOnce(
-      '# RepoMap\n\n- [[src/auth]] — exports: oldSignature\n'
+    expect(openSpy).toHaveBeenCalledWith(VAULT_DIR);
+    // The returned store must have received an upsertNode call for this file.
+    const store = openSpy.mock.results.at(-1)!.value;
+    expect(store.upsertNode).toHaveBeenCalledWith(
+      expect.objectContaining({ id: expect.stringContaining('auth'), kind: 'file' })
     );
-
-    await startMcpServer(VAULT_DIR, SOURCE_DIR);
-    const handler = capturedTools['sync_file_context'];
-    await handler({ filename: FILENAME });
-
-    const [, repoMapContent] = mockWriteFile.mock.calls[1] as [string, string, string];
-    // Stale signature replaced
-    expect(repoMapContent).not.toContain('oldSignature');
-    expect(repoMapContent).toContain('[[src/auth]]');
+    expect(store.close).toHaveBeenCalled();
   });
 
   it('preserves existing concepts: [Auth] when re-syncing', async () => {
@@ -256,7 +246,7 @@ describe('sync_file_context', () => {
     vi.mocked(formatVaultNote).mockImplementationOnce(
       (p: ParseResult) => `---\ntgt: x\nconcepts: [${(p.concepts ?? []).join(', ')}]\n---`
     );
-    // First readFile: existing vault note with concepts
+    // readFile returns existing vault note with concepts
     const existingNote = [
       '---',
       'tgt: src/auth.ts',
@@ -264,8 +254,6 @@ describe('sync_file_context', () => {
       '---',
     ].join('\n');
     mockReadFile.mockResolvedValueOnce(existingNote);
-    // Second readFile: RepoMap
-    mockReadFile.mockResolvedValueOnce('# RepoMap\n');
 
     await startMcpServer(VAULT_DIR, SOURCE_DIR);
     const handler = capturedTools['sync_file_context'];

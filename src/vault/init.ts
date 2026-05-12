@@ -1,12 +1,15 @@
 // Vault Writer
-// Responsibilities: recursive scan, pipeline, write vault dir, _RepoMap.md
+// Responsibilities: recursive scan, parse, write per-file vault notes, persist
+// the dependency graph to <vault>/graph.sqlite, and patch CLAUDE.md.
 
-import { readdir, mkdir, writeFile, readFile, stat, rename } from 'fs/promises';
+import { readdir, mkdir, writeFile, readFile, stat, rename, rm } from 'fs/promises';
 import { join, relative, dirname, basename, normalize } from 'path';
 import { parseFile } from '../ast/parser.js';
 import type { ParseResult } from '../ast/parser.js';
 import { formatVaultNote } from '../compression/formatter.js';
 import { LEGACY_VAULT_DIR, IGNORED_DIRECTORIES } from '../config.js';
+import { openGraphStore, type GraphStore, type GraphEdge } from '../store/sqlite.js';
+import { normalizeGraphKey } from '../store/keys.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -111,37 +114,61 @@ function toRelativeForwardSlash(filePath: string, baseDir: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// writeRepoMap — write _RepoMap.md from all ParseResults
+// persistToGraph — write one ParseResult into the SQLite graph store
 // ---------------------------------------------------------------------------
 
-export async function writeRepoMap(
-  outputDir: string,
-  allParsed: ParseResult[],
+export function persistToGraph(
+  store: GraphStore,
+  parsed: ParseResult,
   baseDir: string
-): Promise<void> {
-  const lines: string[] = ['# RepoMap', ''];
+): void {
+  const rel = toRelativeForwardSlash(parsed.filePath, baseDir);
+  const fileKey = normalizeGraphKey(rel);
 
-  for (const parsed of allParsed) {
-    const rel = toRelativeForwardSlash(parsed.filePath, baseDir);
-    const wikiTarget = rel.replace(/\.[^/.]+$/, '');
+  store.upsertNode({
+    id: fileKey,
+    kind: 'file',
+    file: fileKey,
+    name: null,
+    roles: parsed.roles ?? [],
+    purpose: parsed.purpose ?? null,
+    isEntryPoint: parsed.isEntryPoint === true,
+  });
 
-    const parts: string[] = [];
-    if (parsed.exports.length > 0) {
-      parts.push(`exports: ${parsed.exports.join(', ')}`);
+  const edges: GraphEdge[] = parsed.deps.map((d) => ({
+    src: fileKey,
+    dst: normalizeGraphKey(d),
+    kind: 'DEPENDS_ON' as const,
+  }));
+
+  // Granular entities (functions / classes) become first-class nodes whose
+  // id is `<fileKey>::<entityName>`. EXTENDS edges point from the subclass
+  // entity to a free-floating parent key — cross-file resolution is
+  // deferred (v2.6).
+  for (const entity of parsed.entities ?? []) {
+    const entityId = `${fileKey}::${entity.name}`;
+    store.upsertNode({
+      id: entityId,
+      kind: entity.kind,
+      file: fileKey,
+      name: entity.name,
+      roles: [],
+      purpose: null,
+      isEntryPoint: false,
+    });
+    if (entity.extendsName) {
+      edges.push({ src: entityId, dst: entity.extendsName, kind: 'EXTENDS' });
     }
-    if (parsed.deps.length > 0) {
-      parts.push(`deps: ${parsed.deps.join(', ')}`);
-    }
-
-    lines.push(
-      parts.length > 0
-        ? `- [[${wikiTarget}]] — ${parts.join(' — ')}`
-        : `- [[${wikiTarget}]]`
-    );
   }
 
-  const repoMapPath = join(outputDir, '_RepoMap.md');
-  await writeFile(repoMapPath, lines.join('\n'), 'utf8');
+  store.replaceOutgoingEdges(fileKey, edges.filter((e) => e.src === fileKey));
+  // Entity-originated edges replace per-entity, so they don't clobber the
+  // file's DEPENDS_ON list.
+  for (const entity of parsed.entities ?? []) {
+    const entityId = `${fileKey}::${entity.name}`;
+    const entityEdges = edges.filter((e) => e.src === entityId);
+    store.replaceOutgoingEdges(entityId, entityEdges);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,10 +434,19 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
   // Scaffold the concepts/ dir for future self-learning (empty is fine)
   await mkdir(join(outputDir, 'concepts'), { recursive: true });
 
+  // Clean up legacy _RepoMap.md from v2.2 if it exists
+  try {
+    await rm(join(outputDir, '_RepoMap.md'), { force: true });
+  } catch {
+    // Ignore if it doesn't exist
+  }
+
   const vaultDirName = basename(outputDir);
   const files = await walkDir(dir, new Set([vaultDirName]));
   const allParsed: ParseResult[] = [];
   let skipped = 0;
+
+  const store = openGraphStore(outputDir);
 
   for (const filePath of files) {
     const rel = toRelativeForwardSlash(filePath, dir);
@@ -432,6 +468,7 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
       const cached = await readVaultNote(notePath, filePath);
       if (cached) {
         allParsed.push(cached);
+        persistToGraph(store, cached, dir);
         skipped++;
         continue;
       }
@@ -456,18 +493,22 @@ export async function runInit(dir: string, outputDir: string): Promise<void> {
     }
 
     allParsed.push(parsed);
+    persistToGraph(store, parsed, dir);
 
     const noteDir = dirname(notePath);
     await mkdir(noteDir, { recursive: true });
     await writeFile(notePath, content, 'utf8');
   }
 
-  // Write the master index
-  await writeRepoMap(outputDir, allParsed, dir);
+  store.close();
 
   const processed = files.length - skipped;
   console.log(
     `[optivault] Done. Processed ${processed} files, skipped ${skipped} unchanged — ${outputDir}/`
+  );
+  console.log(
+    '[optivault] Tip: pair with the caveman plugin for ~75% output compression →\n' +
+    '           claude plugin marketplace add JuliusBrussee/caveman && claude plugin install caveman@caveman'
   );
 
   // Ensure CLAUDE.md contains the OptiVault protocol directive
