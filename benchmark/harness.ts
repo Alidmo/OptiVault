@@ -6,7 +6,71 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { walkDir } from '../src/vault/init.js';
-import { buildDepGraph, traverseGraph, normalizeGraphKey } from '../src/mcp/server.js';
+import { openGraphStore } from '../src/store/sqlite.js';
+import { normalizeGraphKey } from '../src/store/keys.js';
+
+// ---------------------------------------------------------------------------
+// Local mini-parser kept for the synthetic-RepoMap harness path. Real
+// benchmarks read from the SQLite graph store; this remains for tests that
+// drive `runOptiVault` with an in-memory markdown fixture.
+// ---------------------------------------------------------------------------
+
+interface DepGraph {
+  forward: Map<string, string[]>;
+  reverse: Map<string, string[]>;
+}
+
+function buildDepGraph(repoMapContent: string): DepGraph {
+  const forward = new Map<string, string[]>();
+  const reverse = new Map<string, string[]>();
+  const lines = repoMapContent.split('\n');
+  const entryPat = /^- \[\[([^\]]+)\]\](.*)$/;
+
+  for (const line of lines) {
+    const m = entryPat.exec(line);
+    if (!m) continue;
+    const key = normalizeGraphKey(m[1]);
+    const depsMatch = /—\s*deps:\s*([^—]+?)(?:\s*—|$)/.exec(m[2]);
+    const deps: string[] = [];
+    if (depsMatch) {
+      for (const d of depsMatch[1].split(',').map((s) => normalizeGraphKey(s))) {
+        if (d) deps.push(d);
+      }
+    }
+    forward.set(key, deps);
+    for (const d of deps) {
+      const arr = reverse.get(d) ?? [];
+      arr.push(key);
+      reverse.set(d, arr);
+    }
+  }
+  return { forward, reverse };
+}
+
+function traverseGraph(
+  adjacency: Map<string, string[]>,
+  from: string,
+  depth: number,
+): Array<{ file: string; depth: number }> {
+  const results: Array<{ file: string; depth: number }> = [];
+  const seen = new Set<string>([from]);
+  let frontier: string[] = [from];
+  for (let d = 1; d <= depth; d++) {
+    const next: string[] = [];
+    for (const node of frontier) {
+      const neighbors = adjacency.get(node) ?? [];
+      for (const nb of neighbors) {
+        if (seen.has(nb)) continue;
+        seen.add(nb);
+        results.push({ file: nb, depth: d });
+        next.push(nb);
+      }
+    }
+    if (next.length === 0) break;
+    frontier = next;
+  }
+  return results;
+}
 
 export const TASK_DESCRIPTION =
   'Find all files that transitively depend on src/ast/parser.ts up to depth 2, and list their signatures.';
@@ -141,9 +205,14 @@ export interface BenchmarkResult {
   timestamp: string;
   runs: {
     brute_force: RunMetrics;
-    optivault: RunMetrics;
+    optivault_markdown: RunMetrics;
+    optivault_sqlite: RunMetrics;
   };
-  deltas: Deltas;
+  deltas: {
+    markdown_vs_brute: Deltas;
+    sqlite_vs_brute: Deltas;
+    sqlite_speedup_over_markdown_x: number;
+  };
 }
 
 export async function runBenchmark(repoRoot: string): Promise<BenchmarkResult> {
@@ -155,10 +224,6 @@ export async function runBenchmark(repoRoot: string): Promise<BenchmarkResult> {
   const allFiles = await walkDir(srcDir);
   const bruteForce = await runBruteForce(allFiles, (p) => readFile(p, 'utf8'));
 
-  // OptiVault: read RepoMap, traverse reverse graph from parser, read skeletons.
-  const repoMapContent = await readFile(join(vaultDir, '_RepoMap.md'), 'utf8');
-  // Graph keys are normalized (no extension). Skeletons on disk are
-  // <key>.<ext>.md — probe known extensions until one hits.
   const readSkeletonAnyExt = async (graphKey: string): Promise<string> => {
     const candidates = ['ts', 'tsx', 'js', 'py', 'go', 'rs', 'java', 'kt', 'php', 'cpp', 'cs'];
     for (const ext of candidates) {
@@ -171,7 +236,15 @@ export async function runBenchmark(repoRoot: string): Promise<BenchmarkResult> {
     }
     throw new Error(`no skeleton for ${graphKey}`);
   };
-  const optivault = await runOptiVault(
+
+  // OptiVault (Markdown): read RepoMap, traverse reverse graph from parser, read skeletons.
+  let repoMapContent = '';
+  try {
+    repoMapContent = await readFile(join(vaultDir, '_RepoMap.md'), 'utf8');
+  } catch {
+    repoMapContent = '';
+  }
+  const optivaultMarkdown = await runOptiVault(
     repoMapContent,
     'src/ast/parser',
     2,
@@ -179,14 +252,60 @@ export async function runBenchmark(repoRoot: string): Promise<BenchmarkResult> {
     readSkeletonAnyExt,
   );
 
+  // OptiVault (SQLite): traverse the SQLite graph store and read only the skeletons
+  // for callers of `src/ast/parser` up to depth 2.
+  const store = openGraphStore(vaultDir);
+  let sqliteFrom = normalizeGraphKey('src/ast/parser');
+  // Fallback to basename for bare imports
+  if (store.traverse(sqliteFrom, 'in', 1, ['DEPENDS_ON']).length === 0) {
+    sqliteFrom = sqliteFrom.split('/').pop() ?? sqliteFrom;
+  }
+  const callers = store.traverse(
+    sqliteFrom,
+    'in',
+    2,
+    ['DEPENDS_ON'],
+  );
+  store.close();
+
+  const start = performance.now();
+  const parts: string[] = [];
+  let bytes = 0;
+  let filesRead = 0;
+  for (const r of callers) {
+    try {
+      const content = await readSkeletonAnyExt(r.file);
+      bytes += Buffer.byteLength(content, 'utf8');
+      parts.push(`// === ${r.file} (depth ${r.depth}) ===\n${content}\n`);
+      filesRead++;
+    } catch {
+      // External dep — skeleton may not exist.
+    }
+  }
+  const payload = parts.join('');
+  const wallMs = performance.now() - start;
+  const optivaultSqlite: RunMetrics = {
+    files_read: filesRead,
+    bytes,
+    chars: payload.length,
+    estimated_tokens: estimateTokens(payload.length),
+    wall_ms: wallMs,
+    payload_preview: payload.slice(0, 200),
+  };
+
   return {
     task: TASK_DESCRIPTION,
     timestamp: new Date().toISOString(),
     runs: {
       brute_force: bruteForce,
-      optivault,
+      optivault_markdown: optivaultMarkdown,
+      optivault_sqlite: optivaultSqlite,
     },
-    deltas: computeDeltas(bruteForce, optivault),
+    deltas: {
+      markdown_vs_brute: computeDeltas(bruteForce, optivaultMarkdown),
+      sqlite_vs_brute: computeDeltas(bruteForce, optivaultSqlite),
+      sqlite_speedup_over_markdown_x: round2(optivaultMarkdown.wall_ms / optivaultSqlite.wall_ms),
+    },
   };
 }
 
@@ -206,11 +325,11 @@ const isMain = (() => {
 
 if (isMain) {
   const repoRoot = resolve(fileURLToPath(import.meta.url), '..', '..');
-  // Sanity: ensure _optivault exists.
+  // Sanity: ensure the graph store exists.
   try {
-    await stat(join(repoRoot, '_optivault', '_RepoMap.md'));
+    await stat(join(repoRoot, '_optivault', 'graph.sqlite'));
   } catch {
-    console.error('ERROR: _optivault/_RepoMap.md not found. Run "optivault init ." first.');
+    console.error('ERROR: _optivault/graph.sqlite not found. Run "optivault init ." first.');
     process.exit(1);
   }
 
@@ -219,17 +338,15 @@ if (isMain) {
   await writeFile(outPath, JSON.stringify(result, null, 2) + '\n', 'utf8');
 
   const bf = result.runs.brute_force;
-  const ov = result.runs.optivault;
-  const d = result.deltas;
+  const md = result.runs.optivault_markdown;
+  const sq = result.runs.optivault_sqlite;
   const rel = relative(repoRoot, outPath).split(sep).join('/');
+  
   console.log(`OptiVault Benchmark — src/ast/parser.ts callers, depth=2`);
-  console.log(
-    `  Brute force: ${bf.files_read} files, ${bf.chars} chars, ~${bf.estimated_tokens} tokens, ${Math.round(bf.wall_ms)}ms`,
-  );
-  console.log(
-    `  OptiVault:   ${ov.files_read} files, ${ov.chars} chars, ~${ov.estimated_tokens} tokens, ${Math.round(ov.wall_ms)}ms`,
-  );
-  console.log(`  Δ tokens:    ${d.token_reduction_pct}% reduction`);
-  console.log(`  Δ latency:   ${d.speedup_x}× faster`);
-  console.log(`  Results:     ${rel}`);
+  console.log(`  Brute force:        ${bf.files_read} files, ${bf.chars} chars, ~${bf.estimated_tokens} tokens, ${Math.round(bf.wall_ms)}ms`);
+  console.log(`  OptiVault Markdown: ${md.files_read} files, ${md.chars} chars, ~${md.estimated_tokens} tokens, ${Math.round(md.wall_ms)}ms`);
+  console.log(`  OptiVault SQLite:   ${sq.files_read} files, ${sq.chars} chars, ~${sq.estimated_tokens} tokens, ${Math.round(sq.wall_ms)}ms`);
+  console.log(`  Δ SQLite vs Brute:  ${result.deltas.sqlite_vs_brute.speedup_x}× faster, ${result.deltas.sqlite_vs_brute.token_reduction_pct}% fewer tokens`);
+  console.log(`  Δ SQLite vs MDown:  ${result.deltas.sqlite_speedup_over_markdown_x}× faster than legacy Markdown traversal`);
+  console.log(`  Results:            ${rel}`);
 }

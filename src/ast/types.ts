@@ -1,4 +1,16 @@
 /**
+ * A granular code entity (function, class, route, …) extracted from a file.
+ * Used by the SQLite graph store to model intra-file structure beyond the
+ * coarser file-level dependency graph.
+ */
+export interface Entity {
+  kind: 'function' | 'class' | 'route';
+  name: string;
+  /** Parent type name for inheritance — e.g. `extends AbstractController`. */
+  extendsName?: string;
+}
+
+/**
  * Language Plugin Interface
  *
  * Each language implementation must provide methods to extract
@@ -33,4 +45,13 @@ export interface LanguagePlugin {
    * `index.ts` filenames, `export default function main()`).
    */
   isEntryPoint?(source: string, filePath: string): boolean;
+
+  /**
+   * Extract granular entities (functions, classes, routes) declared in this
+   * file. Returned entities become first-class nodes in the SQLite graph
+   * store, enabling intra-file structural traversal (e.g. EXTENDS edges).
+   * Plugins that have not yet implemented this method may omit it; the
+   * dispatcher treats the absence as an empty list.
+   */
+  extractEntities?(source: string): Entity[];
 }

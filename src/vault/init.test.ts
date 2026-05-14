@@ -31,13 +31,27 @@ vi.mock('fs/promises', () => ({
   rename: vi.fn(),
 }));
 
+vi.mock('../store/sqlite.js', () => {
+  const upsertNode = vi.fn();
+  const upsertEdge = vi.fn();
+  const replaceOutgoingEdges = vi.fn();
+  const close = vi.fn();
+  return {
+    openGraphStore: vi.fn(() => ({
+      upsertNode,
+      upsertEdge,
+      replaceOutgoingEdges,
+      close,
+    })),
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
 import {
   runInit,
-  writeRepoMap,
   VaultRegistry,
   walkDir,
   generateClaudeMd,
@@ -215,7 +229,7 @@ describe('walkDir', () => {
 // ---------------------------------------------------------------------------
 
 describe('runInit', () => {
-  it('writes notes, _RepoMap.md, and CLAUDE.md on a fresh project', async () => {
+  it('writes notes and CLAUDE.md on a fresh project (no _RepoMap.md after v2.5)', async () => {
     mockReaddir.mockResolvedValueOnce([
       makeDirent('auth.ts', false),
       makeDirent('utils.py', false),
@@ -225,8 +239,10 @@ describe('runInit', () => {
 
     await runInit('/project', '/project/_optivault');
 
-    // 2 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
-    expect(mockWriteFile.mock.calls.length).toBe(4);
+    // 2 vault notes + 1 CLAUDE.md (graph persisted to SQLite, not markdown)
+    expect(mockWriteFile.mock.calls.length).toBe(3);
+    const paths = mockWriteFile.mock.calls.map((c) => String(c[0]));
+    expect(paths.some((p) => p.includes('_RepoMap.md'))).toBe(false);
   });
 
   it('skips unparseable files gracefully without crashing', async () => {
@@ -241,8 +257,8 @@ describe('runInit', () => {
 
     await expect(runInit('/project', '/project/_optivault')).resolves.toBeUndefined();
 
-    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md
-    expect(mockWriteFile.mock.calls.length).toBe(3);
+    // 1 vault note + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(2);
   });
 
   it('completes gracefully for an empty directory', async () => {
@@ -250,8 +266,8 @@ describe('runInit', () => {
 
     await expect(runInit('/project', '/project/_optivault')).resolves.toBeUndefined();
 
-    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
-    expect(mockWriteFile.mock.calls.length).toBe(2);
+    // 0 vault notes + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(1);
   });
 
   it('skips unchanged files when vault note is newer than source', async () => {
@@ -262,8 +278,8 @@ describe('runInit', () => {
     await runInit('/project', '/project/_optivault');
 
     expect(mockParseFile).not.toHaveBeenCalled();
-    // 0 vault notes + 1 _RepoMap.md + 1 CLAUDE.md
-    expect(mockWriteFile.mock.calls.length).toBe(2);
+    // 0 vault notes + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(1);
   });
 
   it('re-parses a file when its source is newer than the vault note', async () => {
@@ -275,8 +291,24 @@ describe('runInit', () => {
     await runInit('/project', '/project/_optivault');
 
     expect(mockParseFile).toHaveBeenCalledOnce();
-    // 1 vault note + 1 _RepoMap.md + 1 CLAUDE.md
-    expect(mockWriteFile.mock.calls.length).toBe(3);
+    // 1 vault note + 1 CLAUDE.md
+    expect(mockWriteFile.mock.calls.length).toBe(2);
+  });
+
+  it('prints the caveman plugin tip on successful init', async () => {
+    mockReaddir.mockResolvedValueOnce([makeDirent('auth.ts', false)]);
+    mockParseFile.mockResolvedValue(FIXED_PARSE_RESULT);
+    mockFormatVaultNote.mockReturnValue('---\ntgt: test\n---');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runInit('/project', '/project/_optivault');
+
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('caveman plugin');
+    expect(printed).toContain('claude plugin marketplace add JuliusBrussee/caveman');
+
+    logSpy.mockRestore();
   });
 });
 

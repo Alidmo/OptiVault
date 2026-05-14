@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { DependencyExtractor, ExportExtractor, extractModulePurpose, detectEntryPoint } from './extractor.js';
+import {
+  DependencyExtractor,
+  ExportExtractor,
+  extractModulePurpose,
+  detectEntryPoint,
+  extractEntities,
+} from './extractor.js';
 import { extractFunctionCode } from './function-extractor.js';
 
 // ---------------------------------------------------------------------------
@@ -1027,5 +1033,45 @@ describe('ExportExtractor — Swift', () => {
   it('extracts public func at top level', () => {
     const src = `public func greet(name: String) -> String { return name }`;
     expect(exps.extract(src, 'swift')).toContain('greet(name: String)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractEntities — TypeScript (functions / classes with EXTENDS)
+// ---------------------------------------------------------------------------
+
+describe('extractEntities — TypeScript', () => {
+  it('emits a function entity for a module-level function declaration', () => {
+    const src = `export function processOrder(order: Order): void {}`;
+    const entities = extractEntities(src, '.ts');
+    expect(entities).toContainEqual({ kind: 'function', name: 'processOrder' });
+  });
+
+  it('emits a function entity for a module-level arrow assignment', () => {
+    const src = `export const greet = (name: string) => name;`;
+    const entities = extractEntities(src, '.ts');
+    expect(entities).toContainEqual({ kind: 'function', name: 'greet' });
+  });
+
+  it('emits a class entity with extendsName when the class inherits', () => {
+    const src = `export class Foo extends AbstractController {}`;
+    const entities = extractEntities(src, '.ts');
+    expect(entities).toContainEqual({
+      kind: 'class',
+      name: 'Foo',
+      extendsName: 'AbstractController',
+    });
+  });
+
+  it('emits a class entity without extendsName when the class has no parent', () => {
+    const src = `class Bare {}`;
+    const entities = extractEntities(src, '.ts');
+    expect(entities).toContainEqual({ kind: 'class', name: 'Bare' });
+  });
+
+  it('returns an empty list for plugins that have not implemented entity extraction', () => {
+    // Python plugin does not implement extractEntities — should degrade to [].
+    const src = `def foo():\n    pass`;
+    expect(extractEntities(src, '.py')).toEqual([]);
   });
 });

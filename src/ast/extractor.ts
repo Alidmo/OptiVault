@@ -9,6 +9,7 @@
 import './plugins/index.js';
 
 import { getPlugin, registeredExtensions } from './registry.js';
+import type { Entity } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,6 +121,18 @@ export function detectEntryPoint(source: string, filePath: string, extOrLanguage
   const plugin = getPlugin(ext);
   if (!plugin?.isEntryPoint) return false;
   return plugin.isEntryPoint(source, filePath);
+}
+
+/**
+ * Extract granular entities (functions / classes) from source code using the
+ * appropriate plugin. Returns an empty list when the plugin does not yet
+ * implement entity extraction.
+ */
+export function extractEntities(source: string, extOrLanguage: string): Entity[] {
+  const ext = normalizeInput(extOrLanguage);
+  const plugin = getPlugin(ext);
+  if (!plugin?.extractEntities) return [];
+  return plugin.extractEntities(source);
 }
 
 /**

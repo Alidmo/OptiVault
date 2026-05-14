@@ -9,9 +9,11 @@ import {
   runInit,
   walkDir,
   processFile,
-  writeRepoMap,
+  persistToGraph,
   VaultRegistry,
 } from './init.js';
+import { openGraphStore } from '../store/sqlite.js';
+import { normalizeGraphKey } from '../store/keys.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,10 +54,13 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
     `**/${vaultDirName}/**`,
   ];
 
-  // 1. Initial full scan
+  // 1. Initial full scan (persists to SQLite via runInit)
   await runInit(dir, outputDir);
 
-  // 2. Populate registry from the initial scan
+  // 2. Open store for incremental updates from the watcher
+  const store = openGraphStore(outputDir);
+
+  // 3. Populate registry from the initial scan
   const registry = new VaultRegistry();
   const allFiles = await walkDir(dir, new Set([vaultDirName]));
   for (const filePath of allFiles) {
@@ -88,6 +93,7 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
     try {
       const { parsed, content } = await processFile(filePath);
       registry.set(filePath, parsed);
+      persistToGraph(store, parsed, dir);
 
       const notePath = notePathFor(filePath, dir, outputDir);
       const noteDir = dirname(notePath);
@@ -96,12 +102,6 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
     } catch (err) {
       console.error(`[optivault:watch] Error processing ${rel}:`, err);
       return;
-    }
-
-    try {
-      await writeRepoMap(outputDir, registry.getAll(), dir);
-    } catch (err) {
-      console.error('[optivault:watch] Error writing _RepoMap.md:', err);
     }
   };
 
@@ -113,18 +113,13 @@ export async function runWatch(dir: string, outputDir: string): Promise<void> {
     console.log(`[optivault:watch] Deleted: ${rel} — removed from vault`);
 
     registry.delete(filePath);
+    store.deleteFile(normalizeGraphKey(rel));
 
     const notePath = notePathFor(filePath, dir, outputDir);
     try {
       await unlink(notePath);
     } catch {
       // File may not exist — ignore
-    }
-
-    try {
-      await writeRepoMap(outputDir, registry.getAll(), dir);
-    } catch (err) {
-      console.error('[optivault:watch] Error writing _RepoMap.md:', err);
     }
   };
 

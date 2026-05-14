@@ -5,7 +5,7 @@
  * Handles: .ts, .tsx, .js, .mjs, .jsx
  */
 
-import type { LanguagePlugin } from '../types.js';
+import type { LanguagePlugin, Entity } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,6 +318,50 @@ function isTSEntryPoint(source: string, filePath: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Entity Extraction (functions / classes — module-level only)
+// ---------------------------------------------------------------------------
+
+function extractTypeScriptEntities(source: string): Entity[] {
+  const entities: Entity[] = [];
+  const seenFunctions = new Set<string>();
+
+  // Module-level function declarations:
+  //   [export] [default] [async] function NAME(...
+  const fnDecl =
+    /^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(/gm;
+  let m: RegExpExecArray | null;
+  while ((m = fnDecl.exec(source)) !== null) {
+    if (!seenFunctions.has(m[1])) {
+      seenFunctions.add(m[1]);
+      entities.push({ kind: 'function', name: m[1] });
+    }
+  }
+
+  // Module-level arrow assignments:
+  //   [export] (const|let|var) NAME (...) => ...
+  const arrowDecl =
+    /^[ \t]*(?:export\s+)?(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=\n]+)?\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=\n]*)?\s*=>/gm;
+  while ((m = arrowDecl.exec(source)) !== null) {
+    if (!seenFunctions.has(m[1])) {
+      seenFunctions.add(m[1]);
+      entities.push({ kind: 'function', name: m[1] });
+    }
+  }
+
+  // Class declarations, with optional `extends Parent`:
+  //   [export] [default] [abstract] class NAME [extends PARENT]
+  const classDecl =
+    /^[ \t]*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+([\w.]+))?/gm;
+  while ((m = classDecl.exec(source)) !== null) {
+    const entity: Entity = { kind: 'class', name: m[1] };
+    if (m[2]) entity.extendsName = m[2];
+    entities.push(entity);
+  }
+
+  return entities;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin Implementation
 // ---------------------------------------------------------------------------
 
@@ -328,4 +372,5 @@ export const typescriptPlugin: LanguagePlugin = {
   extractFunctionCode: extractTSFunctionCode,
   extractModulePurpose: extractTSModulePurpose,
   isEntryPoint: isTSEntryPoint,
+  extractEntities: extractTypeScriptEntities,
 };
